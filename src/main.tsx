@@ -19,7 +19,7 @@ import { SEED_SNAPSHOT } from './store/seedSnapshot'
  * Increment SCHEMA_VERSION whenever a store's shape changes OR whenever you want
  * to force every environment to reset to a freshly exported SEED_SNAPSHOT.
  */
-const SCHEMA_VERSION = '4';
+const SCHEMA_VERSION = '5';
 const SCHEMA_KEY = 'dfd-schema-version';
 
 try {

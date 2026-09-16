@@ -1,0 +1,83 @@
+/**
+ * useWholesaleForecast — assembles the wholesale supply forecast from deployed
+ * cuttings across two sources:
+ *   1. Internal batches marked Planted (deploymentDate set).
+ *   2. Customer/partner cutting sales marked Delivered (deliveredDate as deploy).
+ *
+ * It maps each deployment to its projected harvest window and aggregates the
+ * pieces + kilograms into Internal vs Partner pools per window.
+ */
+import { useMemo } from 'react';
+import { useCuttingStore } from '../store/cuttingStore';
+import { useSaleStore } from '../store/saleStore';
+import { useProductStore } from '../store/productStore';
+import {
+  buildForecast, forecastTotals, type Deployment, type ForecastWindow,
+} from '../utils/forecast';
+import {
+  CUTTINGS_PRODUCT_TYPE, CUTTING_TYPE_GRAFTED, CUTTING_ALLOCATION_REPLANT,
+} from '../constants';
+
+export interface WholesaleForecast {
+  windows: ForecastWindow[];
+  totals: ReturnType<typeof forecastTotals>;
+  deploymentCount: number;
+}
+
+export function useWholesaleForecast(): WholesaleForecast {
+  const batches = useCuttingStore((s) => s.batches);
+  const sales = useSaleStore((s) => s.sales);
+  const products = useProductStore((s) => s.products);
+
+  return useMemo(() => {
+    const deployments: Deployment[] = [];
+
+    // 1. Internal batches deployed into the field. Only standing FIELD plants
+    //    produce fruit, so an internal batch counts ONLY when it is BOTH:
+    //      - flagged "For Replant in Farm" (not a sales/"For Delivery" batch), and
+    //      - marked Planted (deployed into the ground via Mark as Planted).
+    //    Batches meant to be packed & sold as cuttings ("For Delivery") never
+    //    yield farm fruit and are excluded entirely.
+    batches.forEach((b) => {
+      const isReplant = b.allocation === CUTTING_ALLOCATION_REPLANT;
+      if (!isReplant || !b.planted || !b.deploymentDate) return;
+      deployments.push({
+        pool: 'internal',
+        cuttingType: b.cuttingType ?? CUTTING_TYPE_GRAFTED,
+        quantity: b.quantityAvailable,
+        deploymentDate: b.deploymentDate,
+        variety: b.subcategory,
+        label: `Internal batch · ${b.subcategory}`,
+      });
+    });
+
+    // 2. Delivered customer/partner cutting sales — each cutting line becomes a
+    //    partner deployment dated on the delivery date (falling back to the sale
+    //    date if a legacy delivered sale carries no deliveredDate).
+    sales.forEach((s) => {
+      if (!s.delivered) return;
+      const deployedOn = s.deliveredDate || s.date;
+      s.items.forEach((item) => {
+        if (!item.productId) return;
+        const product = products.find((p) => p.id === item.productId);
+        if (!product || product.category !== CUTTINGS_PRODUCT_TYPE) return;
+        deployments.push({
+          pool: 'partner',
+          // Cuttings sold to partners are grafted/rooted stock.
+          cuttingType: CUTTING_TYPE_GRAFTED,
+          quantity: Number(item.quantity) || 0,
+          deploymentDate: deployedOn,
+          variety: product.subcategory,
+          label: `${s.customerName || 'Partner'} · ${product.subcategory}`,
+        });
+      });
+    });
+
+    const windows = buildForecast(deployments);
+    return {
+      windows,
+      totals: forecastTotals(windows),
+      deploymentCount: deployments.length,
+    };
+  }, [batches, sales, products]);
+}

@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply bg-gray-50 text-gray-900;
+  }
+}
+
+/* ── Print: show only the payslip when printing ──────────────────────────────
+   When printing is triggered, we add `.payslip-printing` to <body>. Everything
+   is hidden except the #payslip-print container, which is lifted to the top of
+   the page. This keeps the on-screen app chrome (sidebar, modal, buttons) out
+   of the printed sheet. */
+@media print {
+  body.payslip-printing * {
+    visibility: hidden;
+  }
+  body.payslip-printing #payslip-print,
+  body.payslip-printing #payslip-print * {
+    visibility: visible;
+  }
+  body.payslip-printing #payslip-print {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    padding: 24px;
+    width: 100%;
+  }
+  /* Avoid breaking a payslip block across pages where possible */
+  .payslip-block {
+    break-inside: avoid;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #d1d5db transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #d1d5db;
+    border-radius: 3px;
+  }
+}
