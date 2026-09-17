@@ -32,6 +32,18 @@ describe('expenseCategoryStore.addEntry (subcategory add + dedupe)', () => {
     expect(store().categories()).toContain('Equipment Rental');
   });
 
+  it('defaults a brand-new subcategorized category to quantifiable', () => {
+    // New category + subcategory in one step → quantifiable by default so the
+    // purchase captures qty × price and cascades to inventory.
+    store().addEntry('Packaging', 'Box');
+    expect(store().isQuantifiable('Packaging')).toBe(true);
+  });
+
+  it('a top-level-only new category is NOT quantifiable by default', () => {
+    store().addEntry('Consulting', '');
+    expect(store().isQuantifiable('Consulting')).toBe(false);
+  });
+
   it('returns subcategories in alphabetical order, including a newly added one', () => {
     store().addEntry('Fertilizer', 'Alfalfa'); // sorts to the front
     const subs = store().subcategoriesFor('Fertilizer');

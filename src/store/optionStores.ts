@@ -1,5 +1,5 @@
 import { createOptionListStore } from './optionListStore';
-import { SALE_TYPES, INVENTORY_CATEGORIES, UNIT_VALUES, EMPLOYEE_TYPES, DRAGON_FRUIT_VARIETIES } from '../constants';
+import { SALE_TYPES, INVENTORY_CATEGORIES, UNIT_VALUES, EMPLOYEE_TYPES, EMPLOYEE_POSITIONS, DRAGON_FRUIT_VARIETIES } from '../constants';
 import { useSaleStore } from './saleStore';
 import { useProductStore } from './productStore';
 import { useInventoryStore } from './inventoryStore';
@@ -84,6 +84,16 @@ export const useEmployeeTypeStore = createOptionListStore(
   (from, to) => {
     const { employees, updateEmployee } = useEmployeeStore.getState();
     employees.filter((e) => sameOption(e.employeeType, from)).forEach((e) => updateEmployee(e.id, { employeeType: to }));
+  },
+);
+
+/** Rename cascade: employees store their position/role. */
+export const useEmployeePositionStore = createOptionListStore(
+  'dfd-employee-positions',
+  EMPLOYEE_POSITIONS,
+  (from, to) => {
+    const { employees, updateEmployee } = useEmployeeStore.getState();
+    employees.filter((e) => sameOption(e.position, from)).forEach((e) => updateEmployee(e.id, { position: to }));
   },
 );
 

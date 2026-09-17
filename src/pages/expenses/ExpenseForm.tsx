@@ -171,9 +171,14 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
 
   const isDelivery = selectedCategory === DELIVERY_CATEGORY;
   const isAirFare = selectedCategory === AIR_FARE_CATEGORY;
-  // Show Qty + Unit Price only for categories flagged quantifiable (materials).
-  // Delivery and Air Fare have their own layouts and are excluded here.
-  const showQtyPrice = !isDelivery && !isAirFare && isQuantifiable(selectedCategory);
+  // Show Qty + Unit Price for categories flagged quantifiable (materials) OR any
+  // product/inventory-linked type (Cuttings/Fruit/Fertilizer) — buying one of
+  // those is stock, so it must capture quantity and cascade into Inventory even
+  // if the category's quantifiable flag happens to be off.
+  const isInventoryLinkedCategory =
+    ALWAYS_RESELL_CATEGORIES.includes(selectedCategory.trim());
+  const showQtyPrice =
+    !isDelivery && !isAirFare && (isQuantifiable(selectedCategory) || isInventoryLinkedCategory);
   const vendorOptional = OPTIONAL_VENDOR_CATEGORIES.includes(selectedCategory);
   const existingSubcategories = subcategoriesFor(selectedCategory);
   const subcategoryOptions = existingSubcategories.map((s) => ({ value: s, label: s }));

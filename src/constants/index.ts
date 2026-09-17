@@ -51,6 +51,8 @@ export const SALE_TYPE_OPTIONS = toOptions(SALE_TYPES);
 // ─── Employees ─────────────────────────────────────────────────────────────────
 // Seed values for the editable employee-type option store (see optionStores.ts)
 export const EMPLOYEE_TYPES = ['Full Time', 'Part Time', 'Contractual', 'Seasonal'] as const;
+// Seed values for the editable employee-position option store
+export const EMPLOYEE_POSITIONS = ['Farmer', 'Farm Manager', 'Sales', 'Admin', 'Driver'] as const;
 
 // ─── Units (products & inventory) ────────────────────────────────────────────
 export const UNIT_VALUES = [

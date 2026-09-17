@@ -222,9 +222,18 @@ export const useExpenseCategoryStore = create<ExpenseCategoryState>()(
             (e) => norm(e.category) === norm(cat) && norm(e.subcategory) === norm(sub),
           );
           if (dup) return state;
-          // New rows inherit the category's existing quantifiable setting if it exists
+          // Resolve the quantifiable flag with this precedence:
+          //  1. explicit argument, else
+          //  2. the category's existing setting (keep a category consistent), else
+          //  3. TRUE when this entry has a subcategory — a sub-categorized item is
+          //     a stockable material, so it should capture qty × price and cascade
+          //     to inventory by default, else
+          //  4. the seed default for known material categories.
           const existing = state.entries.find((e) => norm(e.category) === norm(cat));
-          const q = quantifiable ?? existing?.quantifiable ?? QUANTIFIABLE_CATEGORIES.has(cat);
+          const q =
+            quantifiable ??
+            existing?.quantifiable ??
+            (sub !== '' ? true : QUANTIFIABLE_CATEGORIES.has(cat));
           return { entries: [...state.entries, entry(cat, sub, q)] };
         }),
 

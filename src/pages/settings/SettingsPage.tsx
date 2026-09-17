@@ -12,6 +12,7 @@ import {
   useInventoryCategoryStore,
   useUnitStore,
   useEmployeeTypeStore,
+  useEmployeePositionStore,
 } from '../../store/optionStores';
 import type { OptionListStore } from '../../store/optionListStore';
 import { useExpenseCategoryStore, type ExpenseCategoryEntry } from '../../store/expenseCategoryStore';
@@ -770,6 +771,7 @@ export function SettingsPage() {
   const countSaleType = (v: string) => sales.filter((s) => s.saleType === v).length;
   const countInventoryCategory = (v: string) => items.filter((i) => i.category === v).length;
   const countEmployeeType = (v: string) => employees.filter((e) => e.employeeType === v).length;
+  const countPosition = (v: string) => employees.filter((e) => e.position === v).length;
   const countUnit = (v: string) =>
     products.filter((p) => p.unit === v).length +
     items.filter((i) => i.unit === v).length +
@@ -803,6 +805,14 @@ export function SettingsPage() {
           addPlaceholder="e.g. Intern"
           noun="employee type"
           countUsage={countEmployeeType}
+        />
+        <OptionListManager
+          title="Positions"
+          subtitle="Employee roles — used when creating or editing employees"
+          useStore={useEmployeePositionStore}
+          addPlaceholder="e.g. Harvester"
+          noun="position"
+          countUsage={countPosition}
         />
         <OptionListManager
           title="Inventory Categories"

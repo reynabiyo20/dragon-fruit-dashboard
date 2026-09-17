@@ -3,6 +3,7 @@ import { Check, X } from 'lucide-react';
 import type { Option } from '../../constants';
 import { CREATE_NEW } from '../../constants';
 import { SelectField } from './FormField';
+import { SimilarEntryHint } from './SimilarEntryHint';
 import { Button } from '../ui/Button';
 
 interface CreatableSelectProps {
@@ -54,12 +55,27 @@ export function CreatableSelect({
     }
   };
 
+  /** Select an existing option (used by the similar/exact hint) and exit create mode. */
+  const pickExisting = (value: string) => {
+    onChange(value);
+    setCreating(false);
+    setDraft('');
+    setLocalError('');
+  };
+
   const confirmCreate = (e?: React.MouseEvent) => {
     e?.preventDefault();
     e?.stopPropagation();
     const v = draft.trim();
     if (!v) {
       setLocalError('Enter a value');
+      return;
+    }
+    // If the value already exists (case-insensitive), don't create a duplicate —
+    // just select the existing one.
+    const existing = options.find((o) => o.value.trim().toLowerCase() === v.toLowerCase());
+    if (existing) {
+      pickExisting(existing.value);
       return;
     }
     onCreate(v);
@@ -99,6 +115,13 @@ export function CreatableSelect({
           <Button type="button" variant="primary" size="sm" className="shrink-0 px-2" icon={<Check className="w-4 h-4" />} onClick={confirmCreate} aria-label="Confirm" />
           <Button type="button" variant="outline" size="sm" className="shrink-0 px-2" icon={<X className="w-4 h-4" />} onClick={cancelCreate} aria-label="Cancel" />
         </div>
+        {/* Similar-entry suggestions + exact-duplicate notice for the typed value. */}
+        <SimilarEntryHint
+          value={draft}
+          options={options.map((o) => o.label)}
+          noun={(newFieldLabel || 'entry').replace(/^new\s+/i, '').toLowerCase()}
+          onPick={pickExisting}
+        />
         {localError && <p className="text-xs text-red-500">{localError}</p>}
       </div>
     );

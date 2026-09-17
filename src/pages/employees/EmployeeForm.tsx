@@ -10,7 +10,7 @@ import { Button } from '../../components/ui/Button';
 import { DuplicateWarning } from '../../components/forms/DuplicateWarning';
 import { useDuplicateCheck } from '../../hooks/useDuplicateCheck';
 import { formatPHP } from '../../utils/format';
-import { useEmployeeTypeStore } from '../../store/optionStores';
+import { useEmployeeTypeStore, useEmployeePositionStore } from '../../store/optionStores';
 
 const schema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -34,6 +34,10 @@ export function EmployeeForm({ employee, onClose }: EmployeeFormProps) {
   const employeeTypeValues = useEmployeeTypeStore((s) => s.values);
   const addEmployeeType = useEmployeeTypeStore((s) => s.add);
   const typeOptions = employeeTypeValues.map((v) => ({ value: v, label: v }));
+  // Editable position list (create-new supported)
+  const positionValues = useEmployeePositionStore((s) => s.values);
+  const addPosition = useEmployeePositionStore((s) => s.add);
+  const positionOptions = positionValues.map((v) => ({ value: v, label: v }));
   const isEditing = !!employee;
 
   const { register, handleSubmit, control, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
@@ -86,7 +90,19 @@ export function EmployeeForm({ employee, onClose }: EmployeeFormProps) {
 
       <div className="grid grid-cols-2 gap-4">
         <InputField label="Full Name" required autoFocus error={errors.name?.message} {...register('name')} placeholder="e.g. Don" />
-        <InputField label="Position" required error={errors.position?.message} {...register('position')} placeholder="e.g. Farmer" />
+        <CreatableSelect
+          label="Position"
+          required
+          value={watch('position')}
+          options={positionOptions}
+          onChange={(v) => setValue('position', v, { shouldValidate: true, shouldDirty: true })}
+          onCreate={addPosition}
+          placeholder="Select position…"
+          createLabel="+ Create new position…"
+          newFieldLabel="New Position"
+          newFieldPlaceholder="e.g. Harvester"
+          error={errors.position?.message}
+        />
       </div>
 
       <CreatableSelect
