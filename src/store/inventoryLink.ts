@@ -48,6 +48,10 @@ function applySaleToInventory(sale: Pick<Sale, 'items'>, sign: 1 | -1): string[]
       unmatched.push(item.productName || 'Unknown product');
       return;
     }
+    // Cuttings move on DELIVERY, not on the sale itself — a non-delivered cutting
+    // sale must leave inventory untouched. Their `sold` is driven by the delivery
+    // cascade below (recordDeliveryInventory), so skip them here.
+    if (product.category === CUTTINGS_PRODUCT_TYPE) return;
     // Drink / Other aren't inventory-tracked here — skip silently, no warning.
     if (!isInventoryLinkedType(product.category)) return;
 
@@ -195,7 +199,7 @@ export function reverseExpenseInventory(expense: ExpenseInventoryInput): void {
  */
 function applyDeliveryToAvailable(sale: Pick<Sale, 'items'>, sign: 1 | -1): void {
   const { getProduct } = useProductStore.getState();
-  const { findByCategorySub, adjustAvailableForSale } = useInventoryStore.getState();
+  const { findByCategorySub, adjustAvailableForSale, adjustSold } = useInventoryStore.getState();
 
   sale.items.forEach((item: SaleItem) => {
     const qty = Number(item.quantity) || 0;
@@ -203,8 +207,12 @@ function applyDeliveryToAvailable(sale: Pick<Sale, 'items'>, sign: 1 | -1): void
     const product = item.productId ? getProduct(item.productId) : undefined;
     if (!product || product.category !== CUTTINGS_PRODUCT_TYPE) return;
     const row = findByCategorySub(product.category, product.subcategory);
-    if (!row) return; // no allocated pool for this variety yet — nothing to deduct
-    adjustAvailableForSale(row.id, sign * qty);
+    if (!row) return; // no packed pool for this variety yet — nothing to deduct
+    // Delivering cuttings removes them from inventory. Increase `sold` (which the
+    // ending-qty formula subtracts) and reduce the sellable remainder. Reversing
+    // an un-deliver does the opposite. sign = -1 on deliver, +1 on reverse.
+    adjustSold(row.id, -sign * qty);       // deliver → +sold, reverse → -sold
+    adjustAvailableForSale(row.id, sign * qty); // deliver → -available, reverse → +available
   });
 }
 

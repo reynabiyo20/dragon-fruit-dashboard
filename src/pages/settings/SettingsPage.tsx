@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/Button';
 import { Modal } from '../../components/ui/Modal';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { InputField } from '../../components/forms/FormField';
+import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import {
   useSaleTypeStore,
   useInventoryCategoryStore,
@@ -57,6 +58,9 @@ function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, co
   const handleAdd = () => {
     const v = draft.trim();
     if (!v) return;
+    // Block exact duplicates (case-insensitive) — the SimilarEntryHint already
+    // shows the "already exists" notice, so just keep the draft for context.
+    if (values.some((x) => x.toLowerCase() === v.toLowerCase())) return;
     add(v);
     setDraft('');
   };
@@ -66,8 +70,18 @@ function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, co
     setEditDraft(v);
   };
 
+  // A rename that collides with a DIFFERENT existing value (case-insensitive).
+  const renameCollides =
+    editing !== null &&
+    editDraft.trim() !== '' &&
+    editDraft.trim().toLowerCase() !== editing.toLowerCase() &&
+    values.some((x) => x !== editing && x.toLowerCase() === editDraft.trim().toLowerCase());
+
   const commitEdit = () => {
-    if (editing !== null) rename(editing, editDraft);
+    if (editing === null) return;
+    // Block a rename onto an existing value — keep the editor open for a fix.
+    if (renameCollides) return;
+    rename(editing, editDraft);
     setEditing(null);
     setEditDraft('');
   };
@@ -107,7 +121,9 @@ function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, co
                     type="button"
                     onClick={commitEdit}
                     aria-label="Save"
-                    className="p-1 rounded-full text-green-600 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-400"
+                    disabled={renameCollides}
+                    className="p-1 rounded-full text-green-600 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={renameCollides ? `"${editDraft.trim()}" already exists` : 'Save'}
                   >
                     <Check className="w-3.5 h-3.5" />
                   </button>
@@ -148,24 +164,38 @@ function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, co
           </div>
         )}
 
-        <div className="flex items-end gap-2">
-          <div className="flex-1">
-            <InputField
-              label="Add new"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleAdd();
-                }
-              }}
-              placeholder={addPlaceholder}
-            />
+        {/* Inline-rename collision notice */}
+        {renameCollides && (
+          <p className="text-xs text-amber-600">"{editDraft.trim()}" already exists as a {noun} — pick a different name.</p>
+        )}
+
+        <div>
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <InputField
+                label="Add new"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAdd();
+                  }
+                }}
+                placeholder={addPlaceholder}
+              />
+            </div>
+            <Button type="button" icon={<Plus className="w-4 h-4" />} onClick={handleAdd}>
+              Add
+            </Button>
           </div>
-          <Button type="button" icon={<Plus className="w-4 h-4" />} onClick={handleAdd}>
-            Add
-          </Button>
+          {/* Similar / exact-duplicate hint for the value being typed. */}
+          <SimilarEntryHint
+            value={draft}
+            options={values}
+            noun={noun}
+            onPick={(v) => setDraft(v)}
+          />
         </div>
       </div>
 
@@ -206,7 +236,7 @@ type CategoryModalMode =
   | { kind: 'renameSubcategory'; entry: ExpenseCategoryEntry }; // rename one subcategory row
 
 function CategoryManager() {
-  const { entries, categories, addEntry, updateEntry, renameCategory, deleteEntry, isQuantifiable, setQuantifiable } =
+  const { entries, categories, subcategoriesFor, addEntry, updateEntry, renameCategory, deleteEntry, isQuantifiable, setQuantifiable } =
     useExpenseCategoryStore();
   const expenses = useExpenseStore((s) => s.expenses);
   const vendors = useVendorStore((s) => s.vendors);
@@ -267,6 +297,7 @@ function CategoryManager() {
 
   const closeModal = () => setModalOpen(false);
 
+  const norm = (s: string) => s.trim().toLowerCase();
   const handleSave = () => {
     const category = form.category.trim();
     if (!category) {
@@ -274,19 +305,47 @@ function CategoryManager() {
       return;
     }
     if (mode.kind === 'add') {
-      addEntry(category, form.subcategory.trim());
+      const sub = form.subcategory.trim();
+      // Block an exact (case-insensitive) duplicate of the same (category, sub).
+      if (entries.some((e) => norm(e.category) === norm(category) && norm(e.subcategory) === norm(sub))) {
+        setFormError(sub ? `"${category} – ${sub}" already exists` : `"${category}" already exists`);
+        return;
+      }
+      addEntry(category, sub);
     } else if (mode.kind === 'addSubcategory') {
       const sub = form.subcategory.trim();
       if (!sub) {
         setFormError('Subcategory name is required');
         return;
       }
+      if (entries.some((e) => norm(e.category) === norm(mode.category) && norm(e.subcategory) === norm(sub))) {
+        setFormError(`"${sub}" already exists under ${mode.category}`);
+        return;
+      }
       addEntry(mode.category, sub);
     } else if (mode.kind === 'renameCategory') {
+      // Block renaming onto a DIFFERENT existing category.
+      if (
+        norm(category) !== norm(mode.category) &&
+        categories().some((c) => norm(c) === norm(category))
+      ) {
+        setFormError(`"${category}" already exists`);
+        return;
+      }
       renameCategory(mode.category, category);
     } else {
       // renameSubcategory: edit just this row (category stays the same)
-      updateEntry(mode.entry.id, mode.entry.category, form.subcategory.trim());
+      const sub = form.subcategory.trim();
+      if (
+        norm(sub) !== norm(mode.entry.subcategory) &&
+        entries.some(
+          (e) => e.id !== mode.entry.id && norm(e.category) === norm(mode.entry.category) && norm(e.subcategory) === norm(sub),
+        )
+      ) {
+        setFormError(`"${sub}" already exists under ${mode.entry.category}`);
+        return;
+      }
+      updateEntry(mode.entry.id, mode.entry.category, sub);
     }
     closeModal();
   };
@@ -412,27 +471,51 @@ function CategoryManager() {
               <span className="font-medium text-gray-800">{mode.category}</span>
             </p>
           ) : (
-            <InputField
-              label="Category"
-              required
-              value={form.category}
-              onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-              placeholder="e.g. Fertilizer"
-              disabled={mode.kind === 'renameSubcategory'}
-              hint={mode.kind === 'renameCategory' ? 'Renames this category across all its subcategories' : undefined}
-              error={mode.kind === 'renameCategory' || mode.kind === 'add' ? formError : undefined}
-            />
+            <div>
+              <InputField
+                label="Category"
+                required
+                value={form.category}
+                onChange={(e) => { setForm((f) => ({ ...f, category: e.target.value })); setFormError(''); }}
+                placeholder="e.g. Fertilizer"
+                disabled={mode.kind === 'renameSubcategory'}
+                hint={mode.kind === 'renameCategory' ? 'Renames this category across all its subcategories' : undefined}
+                error={mode.kind === 'renameCategory' || mode.kind === 'add' ? formError : undefined}
+              />
+              {(mode.kind === 'add' || mode.kind === 'renameCategory') && (
+                <SimilarEntryHint
+                  value={form.category}
+                  options={categories().filter((c) => mode.kind !== 'renameCategory' || c.toLowerCase() !== mode.category.toLowerCase())}
+                  noun="category"
+                  onPick={(v) => setForm((f) => ({ ...f, category: v }))}
+                />
+              )}
+            </div>
           )}
           {mode.kind !== 'renameCategory' && (
-            <InputField
-              label="Subcategory"
-              required={mode.kind === 'addSubcategory'}
-              value={form.subcategory}
-              onChange={(e) => setForm((f) => ({ ...f, subcategory: e.target.value }))}
-              placeholder={mode.kind === 'addSubcategory' ? 'e.g. Cement' : 'e.g. Magnesium  (leave blank if top-level only)'}
-              hint={mode.kind === 'add' ? 'Leave blank if this category needs no subcategories' : undefined}
-              error={mode.kind === 'addSubcategory' ? formError : undefined}
-            />
+            <div>
+              <InputField
+                label="Subcategory"
+                required={mode.kind === 'addSubcategory'}
+                value={form.subcategory}
+                onChange={(e) => { setForm((f) => ({ ...f, subcategory: e.target.value })); setFormError(''); }}
+                placeholder={mode.kind === 'addSubcategory' ? 'e.g. Cement' : 'e.g. Magnesium  (leave blank if top-level only)'}
+                hint={mode.kind === 'add' ? 'Leave blank if this category needs no subcategories' : undefined}
+                error={mode.kind === 'addSubcategory' || mode.kind === 'renameSubcategory' ? formError : undefined}
+              />
+              {(mode.kind === 'add' || mode.kind === 'addSubcategory' || mode.kind === 'renameSubcategory') && (
+                <SimilarEntryHint
+                  value={form.subcategory}
+                  options={subcategoriesFor(
+                    mode.kind === 'addSubcategory' ? mode.category
+                      : mode.kind === 'renameSubcategory' ? mode.entry.category
+                        : form.category,
+                  ).filter((s) => mode.kind !== 'renameSubcategory' || s.toLowerCase() !== mode.entry.subcategory.toLowerCase())}
+                  noun="subcategory"
+                  onPick={(v) => setForm((f) => ({ ...f, subcategory: v }))}
+                />
+              )}
+            </div>
           )}
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" type="button" onClick={closeModal}>Cancel</Button>
@@ -474,7 +557,7 @@ type ProductModalMode =
   | { kind: 'renameSubcategory'; entry: ProductCategoryEntry };
 
 function ProductCategoryManager() {
-  const { entries, categories, addEntry, updateEntry, renameCategory, deleteEntry } =
+  const { entries, categories, subcategoriesFor, addEntry, updateEntry, renameCategory, deleteEntry } =
     useProductCategoryStore();
   const crud = useListCrud<ProductCategoryEntry>();
   const [mode, setMode] = useState<ProductModalMode>({ kind: 'addCategory' });
@@ -488,19 +571,46 @@ function ProductCategoryManager() {
   const openRenameSubcategory = (entry: ProductCategoryEntry) => { setMode({ kind: 'renameSubcategory', entry }); setForm({ category: entry.category, subcategory: entry.subcategory }); setFormError(''); setModalOpen(true); };
   const closeModal = () => setModalOpen(false);
 
+  const norm = (s: string) => s.trim().toLowerCase();
   const handleSave = () => {
     const category = form.category.trim();
     if (!category) { setFormError('Category is required'); return; }
     if (mode.kind === 'addCategory') {
-      addEntry(category, form.subcategory.trim());
+      const sub = form.subcategory.trim();
+      if (entries.some((e) => norm(e.category) === norm(category) && norm(e.subcategory) === norm(sub))) {
+        setFormError(sub ? `"${category} – ${sub}" already exists` : `"${category}" already exists`);
+        return;
+      }
+      addEntry(category, sub);
     } else if (mode.kind === 'addSubcategory') {
       const sub = form.subcategory.trim();
       if (!sub) { setFormError('Subcategory name is required'); return; }
+      if (entries.some((e) => norm(e.category) === norm(mode.category) && norm(e.subcategory) === norm(sub))) {
+        setFormError(`"${sub}" already exists under ${mode.category}`);
+        return;
+      }
       addEntry(mode.category, sub);
     } else if (mode.kind === 'renameCategory') {
+      if (
+        norm(category) !== norm(mode.category) &&
+        categories().some((c) => norm(c) === norm(category))
+      ) {
+        setFormError(`"${category}" already exists`);
+        return;
+      }
       renameCategory(mode.category, category);
     } else {
-      updateEntry(mode.entry.id, mode.entry.category, form.subcategory.trim());
+      const sub = form.subcategory.trim();
+      if (
+        norm(sub) !== norm(mode.entry.subcategory) &&
+        entries.some(
+          (e) => e.id !== mode.entry.id && norm(e.category) === norm(mode.entry.category) && norm(e.subcategory) === norm(sub),
+        )
+      ) {
+        setFormError(`"${sub}" already exists under ${mode.entry.category}`);
+        return;
+      }
+      updateEntry(mode.entry.id, mode.entry.category, sub);
     }
     closeModal();
   };
@@ -576,27 +686,51 @@ function ProductCategoryManager() {
               Adding a subcategory under <span className="font-medium text-gray-800">{mode.category}</span>
             </p>
           ) : (
-            <InputField
-              label="Category"
-              required
-              value={form.category}
-              onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-              placeholder="e.g. Drink"
-              disabled={mode.kind === 'renameSubcategory'}
-              hint={mode.kind === 'renameCategory' ? 'Renames this category across all its subcategories' : undefined}
-              error={mode.kind === 'renameCategory' || mode.kind === 'addCategory' ? formError : undefined}
-            />
+            <div>
+              <InputField
+                label="Category"
+                required
+                value={form.category}
+                onChange={(e) => { setForm((f) => ({ ...f, category: e.target.value })); setFormError(''); }}
+                placeholder="e.g. Drink"
+                disabled={mode.kind === 'renameSubcategory'}
+                hint={mode.kind === 'renameCategory' ? 'Renames this category across all its subcategories' : undefined}
+                error={mode.kind === 'renameCategory' || mode.kind === 'addCategory' ? formError : undefined}
+              />
+              {(mode.kind === 'addCategory' || mode.kind === 'renameCategory') && (
+                <SimilarEntryHint
+                  value={form.category}
+                  options={categories().filter((c) => mode.kind !== 'renameCategory' || c.toLowerCase() !== mode.category.toLowerCase())}
+                  noun="category"
+                  onPick={(v) => setForm((f) => ({ ...f, category: v }))}
+                />
+              )}
+            </div>
           )}
           {mode.kind !== 'renameCategory' && (
-            <InputField
-              label="Subcategory"
-              required={mode.kind === 'addSubcategory'}
-              value={form.subcategory}
-              onChange={(e) => setForm((f) => ({ ...f, subcategory: e.target.value }))}
-              placeholder={mode.kind === 'addSubcategory' ? 'e.g. Thai White' : 'e.g. Thai White  (leave blank if none)'}
-              hint={mode.kind === 'addCategory' ? 'Leave blank if this category has no subcategories' : undefined}
-              error={mode.kind === 'addSubcategory' ? formError : undefined}
-            />
+            <div>
+              <InputField
+                label="Subcategory"
+                required={mode.kind === 'addSubcategory'}
+                value={form.subcategory}
+                onChange={(e) => { setForm((f) => ({ ...f, subcategory: e.target.value })); setFormError(''); }}
+                placeholder={mode.kind === 'addSubcategory' ? 'e.g. Thai White' : 'e.g. Thai White  (leave blank if none)'}
+                hint={mode.kind === 'addCategory' ? 'Leave blank if this category has no subcategories' : undefined}
+                error={mode.kind === 'addSubcategory' || mode.kind === 'renameSubcategory' ? formError : undefined}
+              />
+              {(mode.kind === 'addCategory' || mode.kind === 'addSubcategory' || mode.kind === 'renameSubcategory') && (
+                <SimilarEntryHint
+                  value={form.subcategory}
+                  options={subcategoriesFor(
+                    mode.kind === 'addSubcategory' ? mode.category
+                      : mode.kind === 'renameSubcategory' ? mode.entry.category
+                        : form.category,
+                  ).filter((s) => mode.kind !== 'renameSubcategory' || s.toLowerCase() !== mode.entry.subcategory.toLowerCase())}
+                  noun="subcategory"
+                  onPick={(v) => setForm((f) => ({ ...f, subcategory: v }))}
+                />
+              )}
+            </div>
           )}
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" type="button" onClick={closeModal}>Cancel</Button>

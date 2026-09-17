@@ -288,14 +288,27 @@ export const CUTTING_SOURCES = [CUTTING_SOURCE_INTERNAL, CUTTING_SOURCE_CUSTOMER
 export const CUTTING_SOURCE_OPTIONS = toOptions(CUTTING_SOURCES, false);
 
 /**
- * Cutting type affects how long a cutting takes to be "ready":
- *  - Grafted (rooted): already has roots, shorter grow-out before it's sellable/plantable.
- *  - Unrooted:         a fresh cutting that must root first, so it needs longer.
+ * Cutting type — the structural style of the cutting (NOT the plant variety;
+ * variety lives on `subcategory`). Affects how long a cutting takes to be ready:
+ *  - Grafted with Roots: already rooted, shorter grow-out before sellable/plantable.
+ *  - Unrooted Cutting:   a fresh cutting that must root first, so it needs longer.
  */
-export const CUTTING_TYPE_GRAFTED = 'Grafted (rooted)';
-export const CUTTING_TYPE_UNROOTED = 'Unrooted cutting';
+export const CUTTING_TYPE_GRAFTED = 'Grafted with Roots';
+export const CUTTING_TYPE_UNROOTED = 'Unrooted Cutting';
 export const CUTTING_TYPES = [CUTTING_TYPE_GRAFTED, CUTTING_TYPE_UNROOTED] as const;
 export const CUTTING_TYPE_OPTIONS = toOptions(CUTTING_TYPES, false);
+
+/**
+ * Normalize any stored/legacy cutting-type string to a canonical value. Older
+ * records used labels like "Grafted (rooted)" / "Unrooted cutting"; treat any
+ * value containing "unroot" as unrooted, everything else as grafted, so yield &
+ * timeline math stays correct after the relabel.
+ */
+export function normalizeCuttingType(value: string | undefined): string {
+  return (value ?? '').toLowerCase().includes('unroot')
+    ? CUTTING_TYPE_UNROOTED
+    : CUTTING_TYPE_GRAFTED;
+}
 
 /**
  * Base grow-out weeks until a cutting is ready, before the cutting-type modifier.
@@ -325,6 +338,6 @@ export const CUTTING_TYPE_READY_MODIFIER_WEEKS: Readonly<Record<string, number>>
  */
 export function cuttingReadyWeeks(variety: string, cuttingType: string): number {
   const base = CUTTING_VARIETY_READY_WEEKS[variety] ?? CUTTING_READY_BASE_WEEKS_DEFAULT;
-  const modifier = CUTTING_TYPE_READY_MODIFIER_WEEKS[cuttingType] ?? 0;
+  const modifier = CUTTING_TYPE_READY_MODIFIER_WEEKS[normalizeCuttingType(cuttingType)] ?? 0;
   return base + modifier;
 }

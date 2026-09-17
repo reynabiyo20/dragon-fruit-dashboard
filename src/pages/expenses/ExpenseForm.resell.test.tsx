@@ -68,15 +68,49 @@ describe('ExpenseForm resell cascade (single quantifiable expense)', () => {
     expect(p?.sellingPricePHP).toBe(0);
   });
 
-  it('does NOT cascade to Products when "We resell this" is left off', async () => {
-    useExpenseStore.setState({ expenses: [savedExpense()] });
+  it('does NOT cascade a non-resell category when "We resell this" is left off', async () => {
+    // Construction Material is a consumable — opt-in only, not auto-cascaded.
+    useVendorStore.setState({
+      vendors: [
+        { id: 'v1', vendor: 'Acme', contact: '', phone: '', supplies: [{ category: 'Construction Material', subcategory: 'Cement' }], notes: '', createdAt: '', updatedAt: '' },
+      ],
+      _seeded: 999,
+    });
+    useExpenseCategoryStore.setState({
+      entries: [
+        { id: 'c2', category: 'Construction Material', subcategory: 'Cement', quantifiable: true, createdAt: '', updatedAt: '' },
+      ],
+      _seeded: 999,
+    });
+    useUnitStore.setState({ values: ['sack', 'bag'] });
+    const consumable: Expense = {
+      id: 'e2', date: '2020-01-15', vendorId: 'v1', vendorName: 'Acme',
+      category: 'Construction Material', subcategory: 'Cement', description: '',
+      quantity: 5, unit: 'bag', unitPrice: 250, amount: 1250,
+      paymentMethod: 'Cash', paid: true, notes: '', createdAt: '', updatedAt: '',
+    };
+    useExpenseStore.setState({ expenses: [consumable] });
     const onClose = vi.fn();
-    render(<ExpenseForm expense={savedExpense()} onClose={onClose} />);
+    render(<ExpenseForm expense={consumable} onClose={onClose} />);
 
     // Leave the checkbox off; just save.
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
 
-    expect(useProductStore.getState().findByCategorySub('Fertilizer', 'Magnesium')).toBeUndefined();
+    expect(useProductStore.getState().findByCategorySub('Construction Material', 'Cement')).toBeUndefined();
+  });
+
+  it('ALWAYS cascades Fertilizer (a resellable category) even when the checkbox is off', async () => {
+    useExpenseStore.setState({ expenses: [savedExpense()] });
+    const onClose = vi.fn();
+    render(<ExpenseForm expense={savedExpense()} onClose={onClose} />);
+
+    // Do NOT check "We resell this" — Fertilizer cascades automatically.
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+
+    const p = useProductStore.getState().findByCategorySub('Fertilizer', 'Magnesium');
+    expect(p).toBeDefined();
+    expect(p?.costPHP).toBe(100);
   });
 });

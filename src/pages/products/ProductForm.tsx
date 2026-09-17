@@ -12,6 +12,8 @@ import { DuplicateWarning } from '../../components/forms/DuplicateWarning';
 import { useDuplicateCheck } from '../../hooks/useDuplicateCheck';
 import { useUnitStore } from '../../store/optionStores';
 import { useProductCategoryStore } from '../../store/productCategoryStore';
+import { syncTaxonomy } from '../../store/taxonomySync';
+import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import { formatPHP } from '../../utils/format';
 
 const schema = z.object({
@@ -42,7 +44,6 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
   // Calling a store method inside the selector would return a new array each
   // render and cause an infinite update loop.
   const categoryEntries = useProductCategoryStore((s) => s.entries);
-  const addCategoryEntry = useProductCategoryStore((s) => s.addEntry);
   const categoryOptions = useMemo(() => {
     const seen = new Set<string>();
     categoryEntries.forEach((e) => seen.add(e.category));
@@ -95,9 +96,9 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
   );
 
   const onSubmit = (data: FormValues) => {
-    // Persist the taxonomy to the managed store so new category/subcategory pairs
-    // reappear in future dropdowns.
-    addCategoryEntry(data.category, data.subcategory);
+    // Persist the taxonomy to BOTH managed taxonomies so the new category/
+    // subcategory pair reappears in Products, Sales AND Expenses dropdowns.
+    syncTaxonomy(data.category, data.subcategory);
     const payload = { ...data };
     if (product) {
       updateProduct(product.id, payload);
@@ -122,36 +123,54 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
       )}
 
       <div className="grid grid-cols-2 gap-4">
-        <CreatableSelect
-          label="Type"
-          required
-          value={watch('category')}
-          options={categoryOptions}
-          onChange={(v) => {
-            setValue('category', v, { shouldValidate: true, shouldDirty: true });
-            // Reset the variety when the type changes so stale values don't linger.
-            setValue('subcategory', '', { shouldDirty: true });
-          }}
-          onCreate={(v) => addCategoryEntry(v, '')}
-          placeholder="Select type…"
-          error={errors.category?.message}
-          createLabel="+ Create new type…"
-          newFieldLabel="New Type"
-          newFieldPlaceholder="e.g. Drink"
-        />
-        <CreatableSelect
-          label="Variety / Item"
-          value={watch('subcategory')}
-          options={subcategoryOptions}
-          onChange={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
-          onCreate={(v) => addCategoryEntry(selectedType, v)}
-          disabled={!selectedType}
-          placeholder={selectedType ? 'Select variety…' : 'Pick a type first'}
-          error={errors.subcategory?.message}
-          createLabel="+ Create new variety…"
-          newFieldLabel="New Variety / Item"
-          newFieldPlaceholder="e.g. Thai White"
-        />
+        <div>
+          <CreatableSelect
+            label="Type"
+            required
+            value={watch('category')}
+            options={categoryOptions}
+            onChange={(v) => {
+              setValue('category', v, { shouldValidate: true, shouldDirty: true });
+              // Reset the variety when the type changes so stale values don't linger.
+              setValue('subcategory', '', { shouldDirty: true });
+            }}
+            onCreate={(v) => syncTaxonomy(v, '')}
+            placeholder="Select type…"
+            error={errors.category?.message}
+            createLabel="+ Create new type…"
+            newFieldLabel="New Type"
+            newFieldPlaceholder="e.g. Drink"
+          />
+          <SimilarEntryHint
+            value={pType ?? ''}
+            options={categoryOptions.map((o) => o.value)}
+            noun="type"
+            onPick={(v) => setValue('category', v, { shouldValidate: true, shouldDirty: true })}
+          />
+        </div>
+        <div>
+          <CreatableSelect
+            label="Variety / Item"
+            value={watch('subcategory')}
+            options={subcategoryOptions}
+            onChange={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
+            onCreate={(v) => syncTaxonomy(selectedType, v)}
+            disabled={!selectedType}
+            placeholder={selectedType ? 'Select variety…' : 'Pick a type first'}
+            error={errors.subcategory?.message}
+            createLabel="+ Create new variety…"
+            newFieldLabel="New Variety / Item"
+            newFieldPlaceholder="e.g. Thai White"
+          />
+          {selectedType && (
+            <SimilarEntryHint
+              value={sub ?? ''}
+              options={subcategoryOptions.map((o) => o.value)}
+              noun="variety"
+              onPick={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
+            />
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-4">

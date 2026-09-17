@@ -3,9 +3,16 @@ import { persist } from 'zustand/middleware';
 import type { InventoryItem } from '../types';
 import { generateId, now } from '../utils/id';
 
-/** Auto-calculate ending quantity */
-function calcEnding(item: Pick<InventoryItem, 'beginningQty' | 'purchased' | 'used' | 'sold'>): number {
-  return item.beginningQty + item.purchased - item.used - item.sold;
+/**
+ * Auto-calculate ending (on-hand) quantity.
+ *   endingQty = beginning + purchased − used − sold + packed
+ * `packed` matters for cuttings: finished cuttings only become on-hand sellable
+ * stock once a rooted batch is "Marked as Packed" (see cuttingStore.markPacked).
+ * For non-cuttings rows `packed` is simply 0, so the formula reduces to the
+ * classic beginning + purchased − used − sold.
+ */
+function calcEnding(item: Pick<InventoryItem, 'beginningQty' | 'purchased' | 'used' | 'sold' | 'packed'>): number {
+  return item.beginningQty + item.purchased - item.used - item.sold + (item.packed ?? 0);
 }
 
 /** Normalize a category/subcategory token for tolerant matching (case + whitespace). */
@@ -38,6 +45,11 @@ interface InventoryState {
   adjustSold: (id: string, delta: number) => void;
   /** Add `delta` to an item's `purchased` (negative reverses); recomputes endingQty. */
   adjustPurchased: (id: string, delta: number) => void;
+  /**
+   * Add `delta` to an item's `packed` pool (never below 0); recomputes endingQty.
+   * Cuttings become on-hand sellable stock when packed, so this feeds endingQty.
+   */
+  adjustPacked: (id: string, delta: number) => void;
   /** Add `delta` to an item's `breedingStock` pool (never below 0). */
   adjustBreedingStock: (id: string, delta: number) => void;
   /** Add `delta` to an item's `availableForSale` pool (never below 0). */
@@ -48,7 +60,7 @@ interface InventoryState {
   lowStockItems: (threshold?: number) => InventoryItem[];
 }
 
-const SEED_VERSION = 5;
+const SEED_VERSION = 6;
 
 /** Build an inventory item row cleanly */
 function inv(
@@ -69,6 +81,7 @@ function inv(
     sold: 0,
     endingQty: 0,
     unitCost,
+    packed: 0,
     breedingStock: 0,
     availableForSale: 0,
     notes,
@@ -137,10 +150,11 @@ export const useInventoryStore = create<InventoryState>()(
 
       addItem: (data) => {
         const item: InventoryItem = {
+          packed: 0,
           breedingStock: 0,
           availableForSale: 0,
           ...data,
-          endingQty: calcEnding(data),
+          endingQty: calcEnding({ packed: 0, ...data }),
           id: generateId(),
           createdAt: now(),
           updatedAt: now(),
@@ -190,6 +204,16 @@ export const useInventoryStore = create<InventoryState>()(
           }),
         })),
 
+      adjustPacked: (id, delta) =>
+        set((state) => ({
+          items: state.items.map((i) => {
+            if (i.id !== id) return i;
+            const updated = { ...i, packed: Math.max(0, (i.packed ?? 0) + delta), updatedAt: now() };
+            updated.endingQty = calcEnding(updated);
+            return updated;
+          }),
+        })),
+
       ensureRow: (category, subcategory, unit = 'piece') => {
         const existing = get().findByCategorySub(category, subcategory);
         if (existing) return existing;
@@ -202,6 +226,7 @@ export const useInventoryStore = create<InventoryState>()(
           used: 0,
           sold: 0,
           unitCost: 0,
+          packed: 0,
           breedingStock: 0,
           availableForSale: 0,
           notes: '',
@@ -240,12 +265,14 @@ export const useInventoryStore = create<InventoryState>()(
           // Pre-v4 stores predate the current seed shape — reseed wholesale.
           state.items = SEED_ITEMS;
         } else {
-          // v4→v5: keep existing rows, just default the new allocation pools.
-          state.items = state.items.map((i) => ({
-            breedingStock: 0,
-            availableForSale: 0,
-            ...i,
-          }));
+          // v4→v6: keep existing rows, default the allocation pools (packed,
+          // breedingStock, availableForSale), and recompute endingQty so it
+          // reflects the new + packed term.
+          state.items = state.items.map((i) => {
+            const merged = { packed: 0, breedingStock: 0, availableForSale: 0, ...i };
+            merged.endingQty = calcEnding(merged);
+            return merged;
+          });
         }
         state._seeded = SEED_VERSION;
       },

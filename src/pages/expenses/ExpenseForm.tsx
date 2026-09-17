@@ -10,6 +10,7 @@ import { useProductStore } from '../../store/productStore';
 import { useExpenseCategoryStore } from '../../store/expenseCategoryStore';
 import { useEntityMatch } from '../../hooks/useEntityMatch';
 import { EntityMatchSuggestions } from '../../components/forms/EntityMatchSuggestions';
+import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import { InputField, SelectField, TextareaField, CheckboxField } from '../../components/forms/FormField';
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import { Button } from '../../components/ui/Button';
@@ -17,7 +18,12 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { formatPHP, formatDate, categoryLabel } from '../../utils/format';
 import { isFutureDate, todayISO } from '../../utils/date';
 import { useUnitStore } from '../../store/optionStores';
-import { PAYMENT_OPTIONS, MANUAL_ENTRY } from '../../constants';
+import { PAYMENT_OPTIONS, MANUAL_ENTRY, INVENTORY_LINKED_TYPES } from '../../constants';
+import { syncTaxonomy } from '../../store/taxonomySync';
+import { unlinkResellProduct } from '../../store/productLink';
+
+/** Categories whose purchases always cascade into the sellable Products list. */
+const ALWAYS_RESELL_CATEGORIES = INVENTORY_LINKED_TYPES as readonly string[];
 import { ProductItemsPicker } from './ProductItemsPicker';
 
 type ExpenseMode = 'single' | 'itemized';
@@ -171,21 +177,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
   const vendorOptional = OPTIONAL_VENDOR_CATEGORIES.includes(selectedCategory);
   const existingSubcategories = subcategoriesFor(selectedCategory);
   const subcategoryOptions = existingSubcategories.map((s) => ({ value: s, label: s }));
-
-  // ── Subcategory similarity recommendation ───────────────────────────────────
-  // When the user has entered a subcategory that isn't already one of this
-  // category's known subcategories (i.e. a freshly typed value), surface any
-  // close existing matches so they can reuse one instead of creating a near-dup.
-  const subKey = (selectedSubcategory ?? '').trim().toLowerCase();
-  const subIsExisting = existingSubcategories.some((s) => s.trim().toLowerCase() === subKey);
-  const similarSubcategories = subKey.length >= 2 && !subIsExisting
-    ? existingSubcategories
-        .filter((s) => {
-          const l = s.trim().toLowerCase();
-          return l.includes(subKey) || subKey.includes(l);
-        })
-        .slice(0, 6)
-    : [];
+  const allCategories = categories();
 
   // ── Vendor filtering by category + subcategory (structured supplies) ─────────
   const matchingVendors = vendors.filter((v) => {
@@ -200,9 +192,18 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
     });
   });
   const noVendorMatches = !!selectedCategory && matchingVendors.length === 0;
-  const vendorList = [...(noVendorMatches ? vendors : matchingVendors)].sort((a, b) =>
-    a.vendor.localeCompare(b.vendor, undefined, { sensitivity: 'base' }),
-  );
+  const vendorList = (() => {
+    const base = [...(noVendorMatches ? vendors : matchingVendors)];
+    // Always include the currently-selected vendor as an option, even if it
+    // doesn't supply the chosen category — otherwise picking an existing vendor
+    // from the match suggestions sets a vendorId with no matching <option>, and
+    // the controlled <select> silently falls back to "Select vendor…".
+    if (vendorId && vendorId !== MANUAL_ENTRY && !base.some((v) => v.id === vendorId)) {
+      const selected = vendors.find((v) => v.id === vendorId);
+      if (selected) base.push(selected);
+    }
+    return base.sort((a, b) => a.vendor.localeCompare(b.vendor, undefined, { sensitivity: 'base' }));
+  })();
 
   // ── Manual vendor entry matching (recommend, don't enforce) ─────────────────
   const isManualVendor = vendorId === MANUAL_ENTRY;
@@ -268,17 +269,30 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
 
   // ── Prefill unit price from the latest matching expense ──────────────────────
   // When adding a new quantifiable expense and the user picks a supply
-  // (category + subcategory) and vendor, prefill the last price paid. Editable.
+  // (category + subcategory), default the unit + cost. Source of truth is the
+  // Product store (in sync with Settings): its `unit` and `costPHP` are used
+  // first, falling back to the last matching expense price when the product has
+  // no cost yet. All values remain editable.
   const [prefilledPrice, setPrefilledPrice] = useState<number | undefined>();
   useEffect(() => {
     if (expense) return;              // don't prefill when editing
     if (!showQtyPrice) return;
     if (!selectedSubcategory) return; // need a specific supply to look up
+
+    // 1) Default the unit from the matching product (source of truth).
+    const product = findSellableProduct(selectedCategory, selectedSubcategory);
+    if (product?.unit) {
+      setValue('unit', product.unit, { shouldValidate: true });
+    }
+
+    // 2) Default the price: prefer the product's cost, else the last price paid.
     const vId = vendorId && vendorId !== MANUAL_ENTRY ? vendorId : undefined;
     const last = latestUnitPrice(selectedCategory, selectedSubcategory, vId);
-    if (last !== undefined) {
-      setValue('unitPrice', last);
-      setPrefilledPrice(last);
+    const productCost = product && product.costPHP > 0 ? product.costPHP : undefined;
+    const defaultPrice = productCost ?? last;
+    if (defaultPrice !== undefined) {
+      setValue('unitPrice', defaultPrice);
+      setPrefilledPrice(defaultPrice);
     } else {
       setPrefilledPrice(undefined);
     }
@@ -399,6 +413,37 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       if (seen.has(key)) return;
       seen.add(key);
       if (it.category) addSupply(resolvedVendorId, it.category, it.subcategory);
+      // Cascade into the sellable Products list when the line is flagged resell,
+      // OR when its category is always-resell (Cuttings / Fruit / Fertilizer).
+      // Cost is seeded from this line; selling price is left for the user.
+      const shouldResell = it.resell || ALWAYS_RESELL_CATEGORIES.includes(it.category);
+      if (shouldResell && it.subcategory.trim()) {
+        const existingProduct = findSellableProduct(it.category, it.subcategory);
+        const wasNew = !existingProduct;
+        const learnedCost = it.unitPrice > 0 && (wasNew || existingProduct.costPHP === 0);
+        upsertSellableProduct({
+          category: it.category,
+          subcategory: it.subcategory,
+          unit: it.unit,
+          costPHP: it.unitPrice,
+        });
+        const label = categoryLabel(it.category, it.subcategory);
+        if (wasNew) {
+          toast.success(`"${label}" added to Products for sale`);
+        } else if (learnedCost) {
+          toast.success(`Saved default cost ${formatPHP(it.unitPrice)} for "${label}"`, { duration: 4000 });
+        }
+      } else if (!ALWAYS_RESELL_CATEGORIES.includes(it.category) && it.subcategory.trim()) {
+        // Line no longer flagged resell (e.g. unchecked on edit) → remove the
+        // auto-created product if safe. Inventory is left untouched.
+        const label = categoryLabel(it.category, it.subcategory);
+        const result = unlinkResellProduct(it.category, it.subcategory);
+        if (result === 'removed') {
+          toast(`Removed "${label}" from Products for sale (kept in Inventory)`, { icon: '↩️', duration: 4000 });
+        } else if (result === 'kept-priced' || result === 'kept-sold') {
+          toast(`"${label}" stays in Products — it has ${result === 'kept-sold' ? 'sales history' : 'a selling price set'}`, { icon: '⚠️', duration: 5000 });
+        }
+      }
     });
 
     onClose();
@@ -427,6 +472,8 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
     // appear, sorted, in the dropdowns next time and drive the inventory link.
     if (effectiveCategory.trim()) {
       addEntry(effectiveCategory.trim(), effectiveSubcategory.trim());
+      // Mirror into the product taxonomy so it's selectable in Products/Sales too.
+      syncTaxonomy(effectiveCategory.trim(), effectiveSubcategory.trim());
     }
 
     // For quantifiable (material) categories, quantity, unit and price are all
@@ -522,20 +569,48 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       }
     }
 
-    // ── Resell cascade: only when flagged, add to the sellable Products list ─────
-    // Everything purchased already flows to Inventory; Products gets only the
-    // items the business resells (cost seeded from this purchase; selling price
-    // left blank). Applies to quantifiable material purchases with a subcategory.
-    if (isResell && showQtyPrice && effectiveSubcategory.trim()) {
-      const wasNew = !findSellableProduct(effectiveCategory, effectiveSubcategory);
+    // ── Resell cascade: add to the sellable Products list ────────────────────
+    // Everything purchased flows to Inventory; Products gets items the business
+    // resells (cost seeded from this purchase; selling price left blank). Cuttings,
+    // Fruit and Fertilizer are ALWAYS resellable stock, so they cascade regardless
+    // of the checkbox; other categories cascade only when flagged.
+    const cascadeToProducts =
+      (isResell || ALWAYS_RESELL_CATEGORIES.includes(effectiveCategory.trim())) &&
+      showQtyPrice &&
+      effectiveSubcategory.trim();
+    if (cascadeToProducts) {
+      const existingProduct = findSellableProduct(effectiveCategory, effectiveSubcategory);
+      const wasNew = !existingProduct;
+      // Whether this purchase will set the product's default cost: either it's a
+      // brand-new product, or an existing one with no cost yet (costPHP 0).
+      const learnedCost = recordUnitPrice > 0 && (wasNew || existingProduct.costPHP === 0);
       upsertSellableProduct({
         category: effectiveCategory,
         subcategory: effectiveSubcategory,
         unit: recordUnit,
         costPHP: recordUnitPrice,
       });
+      const label = categoryLabel(effectiveCategory, effectiveSubcategory);
       if (wasNew) {
-        toast.success(`"${categoryLabel(effectiveCategory, effectiveSubcategory)}" added to Products for sale`);
+        toast.success(`"${label}" added to Products for sale`);
+      } else if (learnedCost) {
+        toast.success(`Saved default cost ${formatPHP(recordUnitPrice)} for "${label}"`, { duration: 4000 });
+      }
+    } else if (
+      // Un-resell reversal (edit): the user cleared "we resell this" for a
+      // non-always-resell category → remove the auto-created product from
+      // Products if it's safe. Inventory is left untouched.
+      !isResell &&
+      showQtyPrice &&
+      effectiveSubcategory.trim() &&
+      !ALWAYS_RESELL_CATEGORIES.includes(effectiveCategory.trim())
+    ) {
+      const label = categoryLabel(effectiveCategory, effectiveSubcategory);
+      const result = unlinkResellProduct(effectiveCategory, effectiveSubcategory);
+      if (result === 'removed') {
+        toast(`Removed "${label}" from Products for sale (kept in Inventory)`, { icon: '↩️', duration: 4000 });
+      } else if (result === 'kept-priced' || result === 'kept-sold') {
+        toast(`"${label}" stays in Products — it has ${result === 'kept-sold' ? 'sales history' : 'a selling price set'}`, { icon: '⚠️', duration: 5000 });
       }
     }
 
@@ -675,6 +750,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             // New expense categories from a purchase default to quantifiable, so
             // Quantity/Unit/Price show and the item can feed inventory / be resold.
             addEntry(v, '', true);
+            syncTaxonomy(v, '');
             setValue('category', v, { shouldDirty: true, shouldValidate: true });
             setValue('subcategory', '', { shouldDirty: true });
             toast.success(`Added category "${v}"`);
@@ -685,6 +761,14 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
           newFieldPlaceholder="e.g. Equipment Rental"
         />
       </div>
+
+      {/* Similar / exact-duplicate hint for a just-typed category. */}
+      <SimilarEntryHint
+        value={selectedCategory}
+        options={allCategories}
+        noun="category"
+        onPick={(v) => { setValue('category', v, { shouldDirty: true, shouldValidate: true }); setValue('subcategory', '', { shouldDirty: true }); }}
+      />
 
       {/* Subcategory — shown for any selected category. Users can pick an existing
           subcategory or add a new one inline; new values are saved to the Expense
@@ -699,6 +783,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             onCreate={(v) => {
               // Persist under the current category so it appears (sorted) next time.
               addEntry(selectedCategory, v);
+              syncTaxonomy(selectedCategory, v);
               toast.success(`Added subcategory "${v}" to ${selectedCategory}`);
             }}
             placeholder={subcategoryOptions.length ? 'Select or add…' : 'Add a subcategory…'}
@@ -707,30 +792,13 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             newFieldPlaceholder="e.g. Magnesium"
           />
 
-          {/* "Did you mean" recommendation: a just-typed subcategory that's close
-              to an existing one, so the user can reuse it instead of duplicating. */}
-          {similarSubcategories.length > 0 && (
-            <div className="rounded-lg border border-blue-100 bg-blue-50 p-2">
-              <p className="text-xs font-medium text-blue-700 mb-1">
-                Similar existing subcategories in "{selectedCategory}":
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {similarSubcategories.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => setValue('subcategory', s, { shouldDirty: true })}
-                    className="px-2.5 py-1 text-xs font-medium bg-white border border-blue-200 rounded-full text-blue-700 hover:bg-blue-100 transition-colors"
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-              <p className="text-xs text-blue-500 mt-1.5">
-                Click to reuse an existing subcategory, or keep "{selectedSubcategory}" to add it as new.
-              </p>
-            </div>
-          )}
+          {/* Similar / exact-duplicate hint for a just-typed subcategory. */}
+          <SimilarEntryHint
+            value={selectedSubcategory ?? ''}
+            options={existingSubcategories}
+            noun="subcategory"
+            onPick={(v) => setValue('subcategory', v, { shouldDirty: true })}
+          />
         </div>
       )}
 
@@ -869,7 +937,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             step="0.01"
             {...register('unitPrice')}
             placeholder="e.g. 250"
-            hint={prefilledPrice !== undefined ? `Last: ${formatPHP(prefilledPrice)} — editable` : undefined}
+            hint={prefilledPrice !== undefined ? `Default: ${formatPHP(prefilledPrice)} — editable` : undefined}
           />
           <InputField
             label="Amount (₱)"

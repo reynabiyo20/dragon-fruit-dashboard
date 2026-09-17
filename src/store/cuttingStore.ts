@@ -11,6 +11,9 @@ import {
   CUTTING_ALLOCATION_DELIVERY, CUTTING_ALLOCATION_REPLANT, CUTTINGS_PRODUCT_TYPE,
 } from '../constants';
 import { useInventoryStore } from './inventoryStore';
+import { useProductStore } from './productStore';
+import { useProductCategoryStore } from './productCategoryStore';
+import { useExpenseCategoryStore } from './expenseCategoryStore';
 
 /**
  * Cuttings store — the *growing* side of the business.
@@ -230,6 +233,13 @@ interface CuttingState {
    * growth. This deployment seeds the wholesale harvest forecast. Idempotent.
    */
   markPlanted: (id: string) => void;
+  /**
+   * Undo an accidental "Ready for Farm Planting": reverts the batch to
+   * "Rooted & Ready to Pack", clears its deployment date + replant flag, and
+   * drops it from the wholesale forecast. (Planting nets breeding stock to zero,
+   * so no inventory reversal is needed.)
+   */
+  unmarkPlanted: (id: string) => void;
   deleteBatch: (id: string) => void;
   getBatch: (id: string) => CuttingBatch | undefined;
 
@@ -264,6 +274,23 @@ export const useCuttingStore = create<CuttingState>()(
           updatedAt: now(),
         });
         set((state) => ({ batches: [...state.batches, batch] }));
+        // Cascade the variety into the sellable Products catalog + Settings
+        // taxonomy so every cutting we grow/source is a sellable product. Cost is
+        // seeded from the batch's per-cutting cost; selling price is left for the
+        // user. Find-or-create — never overwrites values already set.
+        if (batch.subcategory.trim()) {
+          // Product taxonomy + catalog (drives Products & Sales dropdowns).
+          useProductCategoryStore.getState().addEntry(CUTTINGS_PRODUCT_TYPE, batch.subcategory);
+          useProductStore.getState().upsertFromPurchase({
+            category: CUTTINGS_PRODUCT_TYPE,
+            subcategory: batch.subcategory,
+            unit: 'piece',
+            costPHP: batch.sourceCostPerCutting + batch.graftCostPerCutting,
+          });
+          // Expense taxonomy (drives the Expense form dropdowns) so the variety is
+          // selectable when recording a cutting purchase.
+          useExpenseCategoryStore.getState().addEntry(CUTTINGS_PRODUCT_TYPE, batch.subcategory);
+        }
         return batch;
       },
 
@@ -340,10 +367,13 @@ export const useCuttingStore = create<CuttingState>()(
       markPacked: (id) => {
         const batch = get().getBatch(id);
         if (!batch || batch.packed) return; // idempotent — already packed
-        // Release the ready quantity into Available Stock for Sale for this variety.
+        // Packing turns the rooted batch into finished, on-hand sellable stock:
+        //  - `packed`           makes it count toward endingQty (+ packed), and
+        //  - `availableForSale` tracks the still-unsold sellable remainder.
         const inventory = useInventoryStore.getState();
         const row = inventory.ensureRow(CUTTINGS_PRODUCT_TYPE, batch.subcategory, 'piece');
         const qty = batch.quantityAvailable;
+        inventory.adjustPacked(row.id, qty);
         inventory.adjustAvailableForSale(row.id, qty);
         // Remember exactly how much was credited so Undo can reverse it precisely.
         get().updateBatch(id, { packed: true, packedQty: qty });
@@ -352,24 +382,18 @@ export const useCuttingStore = create<CuttingState>()(
       unmarkPacked: (id) => {
         const batch = get().getBatch(id);
         if (!batch || !batch.packed) return false; // nothing to undo
-        // Subtract exactly what packing credited, from the pool it credited.
-        // Packing credits Available Stock for Sale; a batch flagged "For Replant
-        // in Farm" carries its credit in Breeding Stock instead.
         const inventory = useInventoryStore.getState();
         const row = inventory.ensureRow(CUTTINGS_PRODUCT_TYPE, batch.subcategory, 'piece');
         const qty = batch.packedQty ?? batch.quantityAvailable;
-        const isReplant = batch.allocation === CUTTING_ALLOCATION_REPLANT;
 
-        // Safety guard: only undo if the pool balance can absorb the subtraction
-        // without going negative. A negative result means those cuttings were
-        // already allocated/sold, so the packing can't be cleanly reversed.
-        const currentStock = isReplant
-          ? row.breedingStock ?? 0
-          : row.availableForSale ?? 0;
-        if (currentStock - qty < 0) return false;
+        // Safety guard: only undo if the sellable remainder can absorb the
+        // subtraction without going negative. A shortfall means some of these
+        // cuttings were already delivered/sold, so packing can't be cleanly undone.
+        if ((row.availableForSale ?? 0) - qty < 0) return false;
 
-        if (isReplant) inventory.adjustBreedingStock(row.id, -qty);
-        else inventory.adjustAvailableForSale(row.id, -qty);
+        // Reverse both pools packing credited.
+        inventory.adjustPacked(row.id, -qty);
+        inventory.adjustAvailableForSale(row.id, -qty);
 
         // Reset back to the rooted-ready milestone (re-applies the soft-green alert).
         get().updateBatch(id, { packed: false, packedQty: 0 });
@@ -387,6 +411,21 @@ export const useCuttingStore = create<CuttingState>()(
           inventory.adjustBreedingStock(row.id, -batch.quantityAvailable);
         }
         get().updateBatch(id, { planted: true, deploymentDate: todayISO() });
+      },
+
+      unmarkPlanted: (id) => {
+        const batch = get().getBatch(id);
+        if (!batch || !batch.planted) return; // nothing to undo
+        // Undo planting → return the batch to the RESERVED-for-farm state (still
+        // flagged For Replant). Planting had moved the cuttings out of Breeding
+        // Stock into the field, so re-credit that pool and drop the deployment
+        // date (removing it from the wholesale forecast).
+        if (batch.allocation === CUTTING_ALLOCATION_REPLANT) {
+          const inventory = useInventoryStore.getState();
+          const row = inventory.ensureRow(CUTTINGS_PRODUCT_TYPE, batch.subcategory, 'piece');
+          inventory.adjustBreedingStock(row.id, batch.quantityAvailable);
+        }
+        get().updateBatch(id, { planted: false, deploymentDate: '' });
       },
 
       deleteBatch: (id) =>

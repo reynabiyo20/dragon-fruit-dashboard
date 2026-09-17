@@ -17,6 +17,7 @@ import {
   OFF_SEASON_MONTHS,
   EARLY_SEASON_LABEL,
   CUTTING_TYPE_UNROOTED,
+  normalizeCuttingType,
 } from '../constants';
 
 /** Which pool a deployment's supply belongs to. */
@@ -34,12 +35,12 @@ export interface Deployment {
 
 /** Fruits yielded by a single cutting of the given type, first harvest. */
 export function fruitsPerCutting(cuttingType: string): number {
-  return cuttingType === CUTTING_TYPE_UNROOTED ? YIELD_FRUITS_UNROOTED : YIELD_FRUITS_GRAFTED;
+  return normalizeCuttingType(cuttingType) === CUTTING_TYPE_UNROOTED ? YIELD_FRUITS_UNROOTED : YIELD_FRUITS_GRAFTED;
 }
 
 /** Days from deployment to first harvest for the given cutting type. */
 export function harvestDays(cuttingType: string): number {
-  return cuttingType === CUTTING_TYPE_UNROOTED ? HARVEST_DAYS_UNROOTED : HARVEST_DAYS_GRAFTED;
+  return normalizeCuttingType(cuttingType) === CUTTING_TYPE_UNROOTED ? HARVEST_DAYS_UNROOTED : HARVEST_DAYS_GRAFTED;
 }
 
 /** Is a 1-based month in the tropical off-season (Nov–Apr)? */

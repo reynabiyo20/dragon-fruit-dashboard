@@ -1,16 +1,22 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Plus, Trash2, PackagePlus } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { ExpenseItem } from '../../types';
 import { useVendorProductStore, type VendorProduct } from '../../store/vendorProductStore';
 import { useVendorStore } from '../../store/vendorStore';
 import { useProductStore } from '../../store/productStore';
+import { syncTaxonomy } from '../../store/taxonomySync';
 import { useExpenseCategoryStore } from '../../store/expenseCategoryStore';
 import { useUnitStore } from '../../store/optionStores';
 import { InputField, SelectField, CheckboxField } from '../../components/forms/FormField';
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
+import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import { Button } from '../../components/ui/Button';
-import { formatPHP, categoryLabel } from '../../utils/format';
+import { formatPHP } from '../../utils/format';
+import { INVENTORY_LINKED_TYPES } from '../../constants';
+
+/** Categories that always cascade into the sellable Products list. */
+const ALWAYS_RESELL_CATEGORIES = INVENTORY_LINKED_TYPES as readonly string[];
 
 /**
  * Multi-item product picker for an itemized purchase from a single vendor.
@@ -49,7 +55,8 @@ function lineFromProduct(p: VendorProduct, defaultPrice: number): ExpenseItem {
 
 export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: ProductItemsPickerProps) {
   const { productsFor, priceFor, addProduct, linkVendorPrice } = useVendorProductStore();
-  const upsertSellableProduct = useProductStore((s) => s.upsertFromPurchase);
+  // Product store = source of truth for a variety's unit + cost.
+  const findSellableProduct = useProductStore((s) => s.findByCategorySub);
   const getVendor = useVendorStore((s) => s.getVendor);
   const addSupply = useVendorStore((s) => s.addSupply);
   const vendorsState = useVendorStore((s) => s.vendors);
@@ -133,24 +140,24 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
     [allEntries]
   );
 
-  const categoryOptions = categories().map((c) => ({ value: c, label: c }));
+  const allCategories = categories();
+  const categoryOptions = allCategories.map((c) => ({ value: c, label: c }));
   const existingNewSubs = subcategoriesFor(newCategory);
   const newSubOptions = existingNewSubs.map((s) => ({ value: s, label: s }));
 
-  // "Did you mean" recommendation for the inline create-product subcategory:
-  // when the typed subcategory isn't already a known one under the chosen
-  // category, surface close existing matches so the user can reuse instead of
-  // creating a near-duplicate.
-  const newSubKey = newSubcategory.trim().toLowerCase();
-  const newSubIsExisting = existingNewSubs.some((s) => s.trim().toLowerCase() === newSubKey);
-  const similarNewSubs = newSubKey.length >= 2 && !newSubIsExisting
-    ? existingNewSubs
-        .filter((s) => {
-          const l = s.trim().toLowerCase();
-          return l.includes(newSubKey) || newSubKey.includes(l);
-        })
-        .slice(0, 6)
-    : [];
+  // Prefill the New-product Unit + Default price from the Product store (source of
+  // truth) once a category + subcategory resolve to an existing product. Only
+  // fills empty fields, so it never clobbers what the user is typing.
+  useEffect(() => {
+    const cat = newCategory.trim();
+    const sub = newSubcategory.trim();
+    if (!cat || !sub) return;
+    const product = findSellableProduct(cat, sub);
+    if (!product) return;
+    if (product.unit) setNewUnit((u) => (u.trim() ? u : product.unit));
+    if (product.costPHP > 0) setNewPrice((p) => (p.trim() ? p : String(product.costPHP)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newCategory, newSubcategory]);
 
   // Entries to show in the checklist, filtered to the active category when one is chosen
   const visibleEntries = useMemo(
@@ -168,6 +175,26 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
     );
   };
 
+  /**
+   * Resolve the unit + default price for a catalog product, with the sellable
+   * Product store as the source of truth: prefer the vendor's saved price, then
+   * the product's cost; prefer the vendor product's unit, then the sellable
+   * product's unit. Keeps itemized lines defaulted consistently with the rest of
+   * the app.
+   */
+  const resolveDefaults = (p: VendorProduct): { unit: string; price: number } => {
+    const vendorPrice = priceFor(vendorId, p.id);
+    const sellable = findSellableProduct(p.category, p.subcategory);
+    const unit = p.unit || sellable?.unit || '';
+    const price =
+      vendorPrice !== undefined && vendorPrice > 0
+        ? vendorPrice
+        : sellable && sellable.costPHP > 0
+          ? sellable.costPHP
+          : (vendorPrice ?? 0);
+    return { unit, price };
+  };
+
   const addProductEntry = (p: VendorProduct) => {
     const existingPrice = priceFor(vendorId, p.id);
     // Link the product to this vendor if it isn't already, so the association persists
@@ -177,7 +204,8 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
     // Cascade the product's category/subcategory into the vendor's supplies list
     // so it shows up on the Vendors page (no-op if already present).
     addSupply(vendorId, p.category, p.subcategory);
-    onChange([...items, lineFromProduct(p, existingPrice ?? 0)]);
+    const { unit, price } = resolveDefaults(p);
+    onChange([...items, { ...lineFromProduct(p, price), unit }]);
   };
 
   const toggleEntry = (e: SelectableEntry) => {
@@ -253,25 +281,17 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
     linkVendorPrice(vendorId, product.id, price);
     // Cascade into the vendor's supplies list (Vendors page reflects it)
     addSupply(vendorId, product.category, product.subcategory);
-    // Persist the category + subcategory to the managed taxonomy (idempotent) so
-    // the subcategory shows up, sorted, in the dropdowns next time.
+    // Persist the category + subcategory to BOTH managed taxonomies (idempotent)
+    // so the subcategory shows up, sorted, in the Expense, Product & Sales
+    // dropdowns next time.
     addEntry(product.category, product.subcategory);
-    // Only cascade into the sellable Products list when the business resells this
-    // item. The purchase price is a cost, so it seeds costPHP (selling price left
-    // blank for the user to set later). Non-resold supplies stay purchasing-only.
-    if (newResell) {
-      upsertSellableProduct({
-        category: product.category,
-        subcategory: product.subcategory,
-        unit: product.unit || unit,
-        costPHP: price,
-      });
-      toast.success(`"${categoryLabel(product.category, product.subcategory)}" added to Products for sale`);
-    }
+    syncTaxonomy(product.category, product.subcategory);
 
-    // Add it straight to the working lines so the user sees it selected
+    // Add it straight to the working lines so the user sees it selected. The
+    // resell flag rides on the line and is applied at save — and is editable via
+    // the per-line "Resell" toggle below, so a mis-flag can be corrected.
     if (!checkedIds.has(product.id)) {
-      onChange([...items, lineFromProduct(product, price)]);
+      onChange([...items, { ...lineFromProduct(product, price), resell: newResell }]);
     }
     resetCreate();
   };
@@ -355,35 +375,53 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                 </p>
                 {/* Classification (identity): Category + Subcategory */}
                 <div className="grid grid-cols-2 gap-3">
-                  <CreatableSelect
-                    label="Category"
-                    required
-                    options={categoryOptions}
-                    placeholder="Select category…"
-                    value={newCategory}
-                    onChange={(v) => { setNewCategory(v); setNewSubcategory(''); setCreateError(''); }}
-                    onCreate={(v) => { addEntry(v, ''); setNewSubcategory(''); setCreateError(''); }}
-                    createLabel="+ Add new category…"
-                    newFieldLabel="New Category"
-                    newFieldPlaceholder="e.g. Fertilizer"
-                  />
-                  <CreatableSelect
-                    label="Subcategory"
-                    required
-                    options={newSubOptions}
-                    placeholder={newCategory ? (newSubOptions.length ? 'Select or add…' : 'Add a subcategory…') : 'Pick a category first'}
-                    value={newSubcategory}
-                    onChange={(v) => { setNewSubcategory(v); setCreateError(''); }}
-                    onCreate={(v) => {
-                      if (!newCategory.trim()) { setCreateError('Pick a category first'); return; }
-                      addEntry(newCategory, v);
-                      toast.success(`Added subcategory "${v}" to ${newCategory}`);
-                    }}
-                    disabled={!newCategory}
-                    createLabel="+ Add new subcategory…"
-                    newFieldLabel="New Subcategory"
-                    newFieldPlaceholder="e.g. Magnesium"
-                  />
+                  <div>
+                    <CreatableSelect
+                      label="Category"
+                      required
+                      options={categoryOptions}
+                      placeholder="Select category…"
+                      value={newCategory}
+                      onChange={(v) => { setNewCategory(v); setNewSubcategory(''); setCreateError(''); }}
+                      onCreate={(v) => { addEntry(v, ''); setNewSubcategory(''); setCreateError(''); }}
+                      createLabel="+ Add new category…"
+                      newFieldLabel="New Category"
+                      newFieldPlaceholder="e.g. Fertilizer"
+                    />
+                    <SimilarEntryHint
+                      value={newCategory}
+                      options={allCategories}
+                      noun="category"
+                      onPick={(v) => { setNewCategory(v); setNewSubcategory(''); setCreateError(''); }}
+                    />
+                  </div>
+                  <div>
+                    <CreatableSelect
+                      label="Subcategory"
+                      required
+                      options={newSubOptions}
+                      placeholder={newCategory ? (newSubOptions.length ? 'Select or add…' : 'Add a subcategory…') : 'Pick a category first'}
+                      value={newSubcategory}
+                      onChange={(v) => { setNewSubcategory(v); setCreateError(''); }}
+                      onCreate={(v) => {
+                        if (!newCategory.trim()) { setCreateError('Pick a category first'); return; }
+                        addEntry(newCategory, v);
+                        toast.success(`Added subcategory "${v}" to ${newCategory}`);
+                      }}
+                      disabled={!newCategory}
+                      createLabel="+ Add new subcategory…"
+                      newFieldLabel="New Subcategory"
+                      newFieldPlaceholder="e.g. Magnesium"
+                    />
+                    {newCategory && (
+                      <SimilarEntryHint
+                        value={newSubcategory}
+                        options={existingNewSubs}
+                        noun="subcategory"
+                        onPick={(v) => { setNewSubcategory(v); setCreateError(''); }}
+                      />
+                    )}
+                  </div>
                 </div>
                 {/* Unit + default price (both required) */}
                 <div className="grid grid-cols-2 gap-3">
@@ -426,30 +464,6 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                   hint="Adds it to Products for sale, seeding the cost from this purchase (set the selling price later). Leave off for supplies you only consume."
                 />
 
-                {/* "Did you mean" recommendation for a just-typed subcategory */}
-                {similarNewSubs.length > 0 && (
-                  <div className="rounded-lg border border-blue-100 bg-blue-50 p-2">
-                    <p className="text-xs font-medium text-blue-700 mb-1">
-                      Similar existing subcategories in "{newCategory}":
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {similarNewSubs.map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          onClick={() => setNewSubcategory(s)}
-                          className="px-2.5 py-1 text-xs font-medium bg-white border border-blue-200 rounded-full text-blue-700 hover:bg-blue-100 transition-colors"
-                        >
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                    <p className="text-xs text-blue-500 mt-1.5">
-                      Click to reuse an existing subcategory, or keep "{newSubcategory}" to add it as new.
-                    </p>
-                  </div>
-                )}
-
                 {createError && <p className="text-xs text-red-500">{createError}</p>}
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="outline" size="sm" onClick={resetCreate}>Cancel</Button>
@@ -482,6 +496,22 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                       {it.subcategory ? <span className="text-gray-400"> · {it.subcategory}</span> : ''}
                     </span>
                     <span className="text-xs text-gray-400">{it.category}</span>
+                    {/* Per-line resell toggle — editable so a mis-flag is fixable.
+                        Cuttings/Fruit/Fertilizer always resell, so the toggle is
+                        shown as a locked-on note for those. */}
+                    {ALWAYS_RESELL_CATEGORIES.includes(it.category) ? (
+                      <span className="mt-0.5 block text-xs text-green-600">Resold (always)</span>
+                    ) : (
+                      <label className="mt-0.5 flex items-center gap-1 text-xs text-gray-500 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!it.resell}
+                          onChange={(e) => updateLine(i, { resell: e.target.checked })}
+                          className="w-3.5 h-3.5 text-green-600 border-gray-300 rounded focus:ring-green-500"
+                        />
+                        We resell this
+                      </label>
+                    )}
                   </div>
                   <input
                     type="number"

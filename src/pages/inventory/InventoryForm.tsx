@@ -1,10 +1,11 @@
-import { useMemo } from 'react';
+import { useMemo, useEffect } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
 import type { InventoryItem } from '../../types';
 import { useInventoryStore } from '../../store/inventoryStore';
+import { useProductStore } from '../../store/productStore';
 import { InputField, TextareaField, DisplayField } from '../../components/forms/FormField';
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import { Button } from '../../components/ui/Button';
@@ -13,6 +14,8 @@ import { useDuplicateCheck } from '../../hooks/useDuplicateCheck';
 import { formatNumber } from '../../utils/format';
 import { useInventoryCategoryStore, useUnitStore } from '../../store/optionStores';
 import { useProductCategoryStore } from '../../store/productCategoryStore';
+import { syncTaxonomy } from '../../store/taxonomySync';
+import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 
 const schema = z.object({
   subcategory: z.string().min(1, 'Variety / item is required'),
@@ -32,6 +35,8 @@ interface InventoryFormProps { item: InventoryItem | null; onClose: () => void; 
 
 export function InventoryForm({ item, onClose }: InventoryFormProps) {
   const { items, addItem, updateItem } = useInventoryStore();
+  // Product store is the source of truth for a variety's unit + cost.
+  const findProduct = useProductStore((s) => s.findByCategorySub);
   const categoryValues = useInventoryCategoryStore((s) => s.values);
   const addCategory = useInventoryCategoryStore((s) => s.add);
   const unitValues = useUnitStore((s) => s.values);
@@ -83,6 +88,19 @@ export function InventoryForm({ item, onClose }: InventoryFormProps) {
 
   // Duplicate detection on item + category identity
   const [itemName, category] = useWatch({ control, name: ['subcategory', 'category'] });
+
+  // Default unit + unit cost from the Product store (source of truth, in sync
+  // with Settings) once a (category, variety) is selected — only when adding, so
+  // it never overwrites a saved item's values. Editable afterwards.
+  useEffect(() => {
+    if (item) return;                       // don't prefill when editing
+    if (!selectedCategory || !itemName?.trim()) return;
+    const product = findProduct(selectedCategory, itemName);
+    if (!product) return;
+    if (product.unit) setValue('unit', product.unit, { shouldValidate: true, shouldDirty: true });
+    if (product.costPHP > 0) setValue('unitCost', product.costPHP, { shouldDirty: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCategory, itemName]);
   const combined = `${itemName ?? ''} ${category ?? ''}`.trim();
   const candidates = item ? items.filter((i) => i.id !== item.id) : items;
   const duplicates = useDuplicateCheck(
@@ -93,6 +111,9 @@ export function InventoryForm({ item, onClose }: InventoryFormProps) {
   );
 
   const onSubmit = (data: FormValues) => {
+    // Register the (category, subcategory) in the shared taxonomies so an item
+    // added here is selectable in Products, Sales and Expenses too.
+    if (data.category.trim()) syncTaxonomy(data.category, data.subcategory);
     if (item) { updateItem(item.id, data); toast.success('Item updated'); }
     else { addItem(data); toast.success('Item added'); }
     onClose();
@@ -111,44 +132,65 @@ export function InventoryForm({ item, onClose }: InventoryFormProps) {
       )}
 
       <div className="grid grid-cols-2 gap-4">
-        <CreatableSelect
-          label="Type"
-          required
-          value={watch('category')}
-          options={categoryOptions}
-          onChange={(v) => {
-            setValue('category', v, { shouldValidate: true, shouldDirty: true });
-            // Reset the variety/item when the type changes so a Cuttings
-            // variety doesn't linger after switching to, say, Packing Material.
-            setValue('subcategory', '', { shouldDirty: true });
-          }}
-          onCreate={addCategory}
-          placeholder="Select…"
-          error={errors.category?.message}
-          createLabel="+ Create new type…"
-          newFieldLabel="New Type"
-          newFieldPlaceholder="e.g. Irrigation"
-        />
-        <CreatableSelect
-          label="Variety / Item"
-          required
-          value={watch('subcategory')}
-          options={itemOptions}
-          onChange={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
-          onCreate={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
-          disabled={!selectedCategory}
-          placeholder={
-            selectedCategory
-              ? itemOptions.length > 0
-                ? 'Select variety…'
-                : 'Type item name…'
-              : 'Pick a type first'
-          }
-          error={errors.subcategory?.message}
-          createLabel="+ Enter variety / item…"
-          newFieldLabel="Variety / Item"
-          newFieldPlaceholder="e.g. Scotch Tape"
-        />
+        <div>
+          <CreatableSelect
+            label="Type"
+            required
+            value={watch('category')}
+            options={categoryOptions}
+            onChange={(v) => {
+              setValue('category', v, { shouldValidate: true, shouldDirty: true });
+              // Reset the variety/item when the type changes so a Cuttings
+              // variety doesn't linger after switching to, say, Packing Material.
+              setValue('subcategory', '', { shouldDirty: true });
+            }}
+            onCreate={(v) => { addCategory(v); syncTaxonomy(v, ''); }}
+            placeholder="Select…"
+            error={errors.category?.message}
+            createLabel="+ Create new type…"
+            newFieldLabel="New Type"
+            newFieldPlaceholder="e.g. Irrigation"
+          />
+          <SimilarEntryHint
+            value={category ?? ''}
+            options={categoryOptions.map((o) => o.value)}
+            noun="type"
+            onPick={(v) => setValue('category', v, { shouldValidate: true, shouldDirty: true })}
+          />
+        </div>
+        <div>
+          <CreatableSelect
+            label="Variety / Item"
+            required
+            value={watch('subcategory')}
+            options={itemOptions}
+            onChange={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
+            onCreate={(v) => {
+              setValue('subcategory', v, { shouldValidate: true, shouldDirty: true });
+              if (selectedCategory) syncTaxonomy(selectedCategory, v);
+            }}
+            disabled={!selectedCategory}
+            placeholder={
+              selectedCategory
+                ? itemOptions.length > 0
+                  ? 'Select variety…'
+                  : 'Type item name…'
+                : 'Pick a type first'
+            }
+            error={errors.subcategory?.message}
+            createLabel="+ Enter variety / item…"
+            newFieldLabel="Variety / Item"
+            newFieldPlaceholder="e.g. Scotch Tape"
+          />
+          {selectedCategory && (
+            <SimilarEntryHint
+              value={itemName ?? ''}
+              options={itemOptions.map((o) => o.value)}
+              noun="variety / item"
+              onPick={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
+            />
+          )}
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-4">
         <CreatableSelect

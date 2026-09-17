@@ -7,8 +7,10 @@ import toast from 'react-hot-toast';
 import type { Vendor, VendorSupply } from '../../types';
 import { useVendorStore } from '../../store/vendorStore';
 import { useExpenseCategoryStore } from '../../store/expenseCategoryStore';
+import { syncTaxonomy } from '../../store/taxonomySync';
 import { InputField, TextareaField } from '../../components/forms/FormField';
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
+import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { DuplicateWarning } from '../../components/forms/DuplicateWarning';
@@ -154,17 +156,25 @@ export function VendorForm({ vendor, onClose }: VendorFormProps) {
         {/* Add a supply */}
         <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <CreatableSelect
-              label="Category"
-              options={categoryOptions}
-              placeholder="Select category…"
-              value={supCategory}
-              onChange={(v) => { setSupCategory(v); setSelectedSubcategories([]); }}
-              onCreate={(v) => { addEntry(v, ''); }}
-              createLabel="+ Create new category…"
-              newFieldLabel="New Category"
-              newFieldPlaceholder="e.g. Irrigation"
-            />
+            <div>
+              <CreatableSelect
+                label="Category"
+                options={categoryOptions}
+                placeholder="Select category…"
+                value={supCategory}
+                onChange={(v) => { setSupCategory(v); setSelectedSubcategories([]); }}
+                onCreate={(v) => { addEntry(v, ''); syncTaxonomy(v, ''); }}
+                createLabel="+ Create new category…"
+                newFieldLabel="New Category"
+                newFieldPlaceholder="e.g. Irrigation"
+              />
+              <SimilarEntryHint
+                value={supCategory}
+                options={categoryOptions.map((o) => o.value)}
+                noun="category"
+                onPick={(v) => { setSupCategory(v); setSelectedSubcategories([]); }}
+              />
+            </div>
             <div className="space-y-1.5">
               <span className="block text-sm font-medium text-gray-700">Subcategories</span>
               {!supCategory ? (
@@ -196,6 +206,7 @@ export function VendorForm({ vendor, onClose }: VendorFormProps) {
                 onCreate={(v) => {
                   if (!supCategory || !v) return;
                   addEntry(supCategory, v);
+                  syncTaxonomy(supCategory, v);
                   setSelectedSubcategories((prev) => (prev.includes(v) ? prev : [...prev, v]));
                 }}
                 disabled={!supCategory}

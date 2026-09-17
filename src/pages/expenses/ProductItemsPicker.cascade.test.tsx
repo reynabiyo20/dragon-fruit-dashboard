@@ -24,11 +24,13 @@ beforeEach(() => {
   });
 });
 
-/** Renders the picker with a controlled `items` list, mirroring ExpenseForm. */
-function Harness({ vendorId }: { vendorId: string }) {
+/** Renders the picker with a controlled `items` list, mirroring ExpenseForm.
+ *  `onItems` (optional) receives the latest line list for assertions. */
+function Harness({ vendorId, onItems }: { vendorId: string; onItems?: (items: ExpenseItem[]) => void }) {
   const [items, setItems] = useState<ExpenseItem[]>([]);
+  const handle = (next: ExpenseItem[]) => { setItems(next); onItems?.(next); };
   return (
-    <ProductItemsPicker vendorId={vendorId} vendorName="Acme" items={items} onChange={setItems} />
+    <ProductItemsPicker vendorId={vendorId} vendorName="Acme" items={items} onChange={handle} />
   );
 }
 
@@ -60,7 +62,7 @@ describe('ProductItemsPicker cascades a checked product into vendor supplies', (
     expect(useVendorProductStore.getState().productsFor('v1').length).toBe(1);
   });
 
-  it('inline "New product" persists a new subcategory into the expense taxonomy (sorted)', () => {
+  it('inline "New product" persists a new subcategory and flags the line for resell', () => {
     useVendorStore.setState({
       vendors: [
         { id: 'v1', vendor: 'Acme', contact: '', phone: '', supplies: [], notes: '', createdAt: '', updatedAt: '' },
@@ -68,7 +70,8 @@ describe('ProductItemsPicker cascades a checked product into vendor supplies', (
       _seeded: 999,
     });
 
-    render(<Harness vendorId="v1" />);
+    let latestItems: ExpenseItem[] = [];
+    render(<Harness vendorId="v1" onItems={(it) => { latestItems = it; }} />);
 
     // Open the inline create-product form
     fireEvent.click(screen.getByRole('button', { name: /new product/i }));
@@ -111,15 +114,16 @@ describe('ProductItemsPicker cascades a checked product into vendor supplies', (
     const product = useVendorProductStore.getState().products.find((p) => p.subcategory === 'Potassium');
     expect(product?.name).toBe('Potassium');
 
-    // Cascaded into the sellable Products store with unit + cost = the entered price
-    const sellable = useProductStore.getState().findByCategorySub('Fertilizer', 'Potassium');
-    expect(sellable).toBeDefined();
-    expect(sellable?.unit).toBe('sack');
-    expect(sellable?.costPHP).toBe(300);
-    expect(sellable?.sellingPricePHP).toBe(0);
+    // The line carries the resell flag (the actual Products cascade happens at
+    // expense submit, driven by this flag — see ExpenseForm.submitItemized).
+    const line = latestItems.find((it) => it.subcategory === 'Potassium');
+    expect(line).toBeDefined();
+    expect(line?.resell).toBe(true);
+    expect(line?.unit).toBe('sack');
+    expect(line?.unitPrice).toBe(300);
   });
 
-  it('does NOT cascade to the sellable Products list when "We resell this" is left off', () => {
+  it('leaves the line un-flagged for resell when "We resell this" is left off', () => {
     useVendorStore.setState({
       vendors: [
         { id: 'v1', vendor: 'Acme', contact: '', phone: '', supplies: [], notes: '', createdAt: '', updatedAt: '' },
@@ -127,7 +131,8 @@ describe('ProductItemsPicker cascades a checked product into vendor supplies', (
       _seeded: 999,
     });
 
-    render(<Harness vendorId="v1" />);
+    let latestItems: ExpenseItem[] = [];
+    render(<Harness vendorId="v1" onItems={(it) => { latestItems = it; }} />);
     fireEvent.click(screen.getByRole('button', { name: /new product/i }));
 
     const categorySelect = Array.from(document.querySelectorAll('select')).find((s) =>
@@ -151,8 +156,11 @@ describe('ProductItemsPicker cascades a checked product into vendor supplies', (
     // Leave "We resell this" unchecked (default), then submit
     fireEvent.click(screen.getByRole('button', { name: /add product/i }));
 
-    // Catalog got it, but the sellable Products list did NOT
+    // Catalog got the product, but the line is NOT flagged for resell, so it
+    // won't cascade into sellable Products on save.
     expect(useVendorProductStore.getState().products.some((p) => p.subcategory === 'Cement')).toBe(true);
-    expect(useProductStore.getState().findByCategorySub('Fertilizer', 'Cement')).toBeUndefined();
+    const line = latestItems.find((it) => it.subcategory === 'Cement');
+    expect(line).toBeDefined();
+    expect(line?.resell).toBeFalsy();
   });
 });

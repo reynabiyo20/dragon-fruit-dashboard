@@ -59,9 +59,11 @@ export const useProductCategoryStore = create<ProductCategoryState>()(
           const cat = category.trim();
           const sub = subcategory.trim();
           if (!cat) return state;
-          // Avoid duplicate (category, sub) rows
+          // Avoid duplicate (category, sub) rows — case-insensitive so "Fruit"
+          // and "fruit" can't both exist (matches the expense taxonomy store).
+          const norm = (s: string) => s.trim().toLowerCase();
           const exists = state.entries.some(
-            (e) => e.category === cat && e.subcategory === sub,
+            (e) => norm(e.category) === norm(cat) && norm(e.subcategory) === norm(sub),
           );
           if (exists) return state;
           return { entries: [...state.entries, entry(cat, sub)] };

@@ -186,6 +186,12 @@ export interface ExpenseItem {
   unit: string;           // unit of measure ('' when not applicable)
   unitPrice: number;      // price per unit at time of purchase
   total: number;          // auto-calculated: quantity * unitPrice
+  /**
+   * Whether the business resells this item — when true it cascades into the
+   * sellable Products list on save. Editable per line in the itemized picker so a
+   * mis-flag can be corrected. Cuttings/Fruit/Fertilizer always cascade regardless.
+   */
+  resell?: boolean;
 }
 
 export interface Expense {
@@ -284,10 +290,15 @@ export interface InventoryItem {
    * Cuttings-specific allocation pools, driven by the Cuttings Store post-rooting
    * allocation and the Sales delivery flow. Independent of the purchase/sale math
    * above. Optional for back-compat — treat `undefined` as 0.
-   *  - breedingStock:    rooted cuttings kept for our own farm (flagged "For Replant").
-   *  - availableForSale: rooted cuttings released to the sale pool (flagged "For Delivery"),
-   *                      decremented when a cutting sale is marked delivered.
+   *  - packed:           cuttings packed from a rooted batch ("Mark as Packed").
+   *                      This is what makes finished cuttings count as on-hand
+   *                      stock, so it feeds endingQty (+ packed).
+   *  - breedingStock:    rooted cuttings reserved for our own farm ("Reserve for Farm").
+   *  - availableForSale: still-unsold packed cuttings (packed − delivered), i.e.
+   *                      the sellable remainder. Decremented when a cutting sale
+   *                      is marked delivered.
    */
+  packed?: number;
   breedingStock?: number;
   availableForSale?: number;
   notes: string;

@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, Sprout, AlertTriangle, DollarSign } from 'lucide-react';
 import { useInventoryStore } from '../../store/inventoryStore';
 import { useUnitStore } from '../../store/optionStores';
@@ -15,7 +16,7 @@ import { Badge } from '../../components/ui/Badge';
 import { RowActions } from '../../components/ui/RowActions';
 import { formatNumber, formatPHP } from '../../utils/format';
 import { useListCrud } from '../../hooks/useListCrud';
-import { LOW_STOCK_THRESHOLD } from '../../constants';
+import { LOW_STOCK_THRESHOLD, CUTTINGS_PRODUCT_TYPE } from '../../constants';
 import { InventoryForm } from './InventoryForm';
 
 export function InventoryPage() {
@@ -23,6 +24,22 @@ export function InventoryPage() {
   const unitOptions = useUnitStore((s) => s.values).map((v) => ({ value: v, label: v }));
   const crud = useListCrud<InventoryItem>();
   const [showLowStockOnly, setShowLowStockOnly] = useState(false);
+
+  // Deep-link support: /inventory?highlight=<variety> (e.g. from the Cuttings
+  // Store "view inventory" link). Highlights the matching Cuttings row so the
+  // packed stock is easy to spot; clears when the highlight is dismissed.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const highlightVariety = (searchParams.get('highlight') ?? '').trim().toLowerCase();
+  const highlightRow = (i: InventoryItem) =>
+    !!highlightVariety &&
+    i.category === CUTTINGS_PRODUCT_TYPE &&
+    i.subcategory.trim().toLowerCase() === highlightVariety;
+  const highlightedItem = highlightVariety ? items.find(highlightRow) : undefined;
+  const clearHighlight = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('highlight');
+    setSearchParams(next, { replace: true });
+  };
 
   const alerts = useMemo(() => lowStockItems(LOW_STOCK_THRESHOLD), [items]);
   const invValue = useMemo(() => totalValue(), [items]);
@@ -63,10 +80,53 @@ export function InventoryPage() {
     { key: 'used',         header: 'Used',       accessor: (i) => formatNumber(i.used, 2),         sortValue: (i) => i.used,         editable: { type: 'number', step: '0.01', min: 0, getValue: (i) => i.used } },
     { key: 'sold',         header: 'Sold',       accessor: (i) => formatNumber(i.sold, 2),         sortValue: (i) => i.sold,         editable: { type: 'number', step: '0.01', min: 0, getValue: (i) => i.sold } },
     {
+      key: 'packed',
+      header: 'Packed',
+      // Cuttings become on-hand sellable stock when "Marked as Packed" — this
+      // adds into Ending Qty. 0 for non-cuttings rows.
+      accessor: (i) => {
+        const qty = i.packed ?? 0;
+        return <span className={qty > 0 ? 'font-medium text-blue-700' : 'text-gray-400'}>{formatNumber(qty, 0)}</span>;
+      },
+      sortValue: (i) => i.packed ?? 0,
+    },
+    {
       key: 'endingQty',
       header: 'Ending Qty',
+      // beginning + purchased − used − sold + packed
       accessor: (i) => <span className={endingClass(i.endingQty)}>{formatNumber(i.endingQty, 2)}</span>,
       sortValue: (i) => i.endingQty,
+      headerClassName: 'whitespace-nowrap',
+    },
+    {
+      key: 'availableForSale',
+      header: 'Available for Sale',
+      // The still-unsold packed cuttings (packed − delivered). A subset of Ending
+      // Qty, not an addition to it. Delivering a cutting sale reduces this.
+      accessor: (i) => {
+        const qty = i.availableForSale ?? 0;
+        return (
+          <span className={qty > 0 ? 'font-semibold text-blue-700' : 'text-gray-400'}>
+            {formatNumber(qty, 0)}
+          </span>
+        );
+      },
+      sortValue: (i) => i.availableForSale ?? 0,
+    },
+    {
+      key: 'breedingStock',
+      header: 'Our Farm Breeding Stock',
+      // Units reserved for our own plots — credited when a batch is flagged
+      // "For Replant in Farm", cleared when it is "Marked as Planted".
+      accessor: (i) => {
+        const qty = i.breedingStock ?? 0;
+        return (
+          <span className={qty > 0 ? 'font-semibold text-purple-700' : 'text-gray-400'}>
+            {formatNumber(qty, 0)}
+          </span>
+        );
+      },
+      sortValue: (i) => i.breedingStock ?? 0,
     },
     {
       key: 'unitCost',
@@ -90,7 +150,7 @@ export function InventoryPage() {
     <div className="space-y-6">
       <PageHeader
         title="Inventory"
-        subtitle={`${items.length} item${items.length !== 1 ? 's' : ''} · Ending qty auto-calculated`}
+        subtitle={`${items.length} item${items.length !== 1 ? 's' : ''} · Ending Qty = beginning + purchased − used − sold + packed`}
         actions={
           <div className="flex items-center gap-2">
             {alerts.length > 0 && (
@@ -136,6 +196,24 @@ export function InventoryPage() {
         </SectionCard>
       )}
 
+      {/* Deep-link highlight banner (from the Cuttings "view inventory" link) */}
+      {highlightVariety && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5">
+          <p className="text-sm text-blue-800">
+            {highlightedItem
+              ? <>Showing <span className="font-semibold">{highlightedItem.subcategory}</span> cuttings — <span className="font-semibold">{formatNumber(highlightedItem.availableForSale ?? 0, 0)}</span> in Available Stock for Sale.</>
+              : <>No cuttings inventory row found for "{searchParams.get('highlight')}".</>}
+          </p>
+          <button
+            type="button"
+            onClick={clearHighlight}
+            className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline flex-shrink-0"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       {items.length === 0 ? (
         <EmptyState
           icon={Sprout}
@@ -156,6 +234,8 @@ export function InventoryPage() {
           }
           searchPlaceholder={showLowStockOnly ? 'Search low-stock items…' : 'Search inventory…'}
           emptyMessage={showLowStockOnly ? 'No low-stock items found.' : 'No inventory items found.'}
+          // Highlight the deep-linked Cuttings row (from the packed-cutting link).
+          rowClassName={(i) => (highlightRow(i) ? 'bg-blue-50 hover:bg-blue-100' : '')}
           actions={(i) => <RowActions onEdit={() => crud.openEdit(i)} onDelete={() => crud.requestDelete(i)} />}
           bulkActions={{ noun: 'item', onDelete: (rows) => rows.forEach((i) => deleteItem(i.id)) }}
           onCellEdit={(i, key, value) => updateItem(i.id, { [key]: value })}
