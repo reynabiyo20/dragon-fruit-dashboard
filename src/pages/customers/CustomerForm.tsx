@@ -225,7 +225,7 @@ export function CustomerForm({ customer, onClose }: CustomerFormProps) {
           customer cascades into the Vendors module on save. */}
       <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 space-y-3">
         <div className="flex items-center gap-1.5 text-sm font-medium text-gray-700">
-          <Handshake className="w-4 h-4 text-green-600" />
+          <Handshake className="w-4 h-4 text-primary-600" />
           Farm Partner
         </div>
         <CheckboxField

@@ -177,6 +177,15 @@ export type ExpenseCategory = string;
  * category, unit and price at save time so later catalog edits never rewrite
  * historical records. Items may span different categories within one expense.
  */
+/**
+ * For a CUTTINGS purchase, whether the cuttings arrive ready to sell or still
+ * need packing. Drives which inventory pool the purchased quantity lands in:
+ *  - 'packed': into the `packed` / Ready-for-Sale pool (sellable immediately).
+ *  - 'bare':   into the `needsPacking` pool (on hand but not yet sellable).
+ * Only meaningful for the Cuttings category; ignored otherwise.
+ */
+export type CuttingPurchaseState = 'packed' | 'bare';
+
 export interface ExpenseItem {
   productId: string;      // '' for ad-hoc lines not tied to a catalog product
   name: string;           // product / line name
@@ -192,6 +201,8 @@ export interface ExpenseItem {
    * mis-flag can be corrected. Cuttings/Fruit/Fertilizer always cascade regardless.
    */
   resell?: boolean;
+  /** Cuttings only: whether this line arrives packed or bare (needs packing). */
+  cuttingState?: CuttingPurchaseState;
 }
 
 export interface Expense {
@@ -214,6 +225,16 @@ export interface Expense {
   amount: number;                     // for multi-item expenses this equals the sum of item totals
   paymentMethod: PaymentMethod | string;
   paid: boolean;
+  /**
+   * Bookkeeping attributes (optional for back-compat with older records):
+   *  - accountingClassification: how the expense is treated in the books
+   *    (CapEx / OpEx / COGS / …). Editable option list, cascades on rename.
+   *  - expenseType: cost behavior (Fixed / Variable / Semi-Variable / …).
+   */
+  accountingClassification?: string;
+  expenseType?: string;
+  /** Cuttings only (single-line expense): whether it arrives packed or bare. */
+  cuttingState?: CuttingPurchaseState;
   notes: string;
   createdAt: string;
   updatedAt: string;
@@ -284,23 +305,66 @@ export interface InventoryItem {
   purchased: number;
   used: number;
   sold: number;
-  endingQty: number;        // auto-calculated: beginningQty + purchased - used - sold
+  endingQty: number;        // auto-calc: beginning + purchased - used - sold + packed + needsPacking + produced
   unitCost: number;
   /**
    * Cuttings-specific allocation pools, driven by the Cuttings Store post-rooting
-   * allocation and the Sales delivery flow. Independent of the purchase/sale math
-   * above. Optional for back-compat — treat `undefined` as 0.
-   *  - packed:           cuttings packed from a rooted batch ("Mark as Packed").
-   *                      This is what makes finished cuttings count as on-hand
-   *                      stock, so it feeds endingQty (+ packed).
+   * allocation, cutting purchases, and the Sales delivery flow. Independent of the
+   * purchase/sale math above. Optional for back-compat — treat `undefined` as 0.
+   *  - packed:           cuttings ready to sell — farm-packed from a rooted batch
+   *                      ("Mark as Packed") OR bought from a customer already
+   *                      packed. Counts as on-hand stock, so it feeds endingQty.
+   *  - needsPacking:     bare cuttings bought from a customer that still need
+   *                      packing before they can be sold. On hand (feeds
+   *                      endingQty) but NOT sellable until packed (see packCuttings).
    *  - breedingStock:    rooted cuttings reserved for our own farm ("Reserve for Farm").
-   *  - availableForSale: still-unsold packed cuttings (packed − delivered), i.e.
-   *                      the sellable remainder. Decremented when a cutting sale
-   *                      is marked delivered.
+   *  - availableForSale: the "Ready for Sale" pool — still-unsold packed cuttings
+   *                      (packed − delivered). Decremented when a cutting sale is
+   *                      marked received.
+   *  - produced:         finished goods manufactured in-house from other inventory
+   *                      inputs (e.g. a drink pressed from fruit, our own fertilizer
+   *                      blend). Credited by the Produce step and feeds endingQty.
    */
   packed?: number;
+  needsPacking?: number;
   breedingStock?: number;
   availableForSale?: number;
+  produced?: number;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ─── Manufacturing / transformation (making one product from others) ──────────
+// Distinct from the harvest ProductionEntry below — this models turning existing
+// inventory inputs into a NEW finished product (Fruit → Drink, ingredients → own
+// Fertilizer brand).
+
+/** A single raw-material input consumed by a manufacturing run. */
+export interface ManufactureInput {
+  category: string;
+  subcategory: string;
+  quantity: number;
+  unit: string;
+}
+
+/**
+ * A manufacturing run: staged inputs consumed from inventory to make a target
+ * product. While `status` is 'staged' the run accumulates inputs (each also
+ * incremented the input row's `used`, lowering its ending qty). Producing it
+ * credits the target inventory row's `produced` pool with `producedQty` and
+ * closes the run.
+ */
+export interface ManufactureRun {
+  id: string;
+  targetCategory: string;
+  targetSubcategory: string;
+  inputs: ManufactureInput[];
+  producedQty: number;        // finished units credited on Produce (0 while staged)
+  producedUnit: string;       // unit of the finished target product
+  status: 'staged' | 'produced';
+  stagedDate: string;         // ISO date the run was opened / first input staged
+  producedDate: string;       // ISO date it was produced ('' while staged)
   notes: string;
   createdAt: string;
   updatedAt: string;
@@ -312,6 +376,14 @@ export interface ProductionEntry {
   id: string;
   date: string;
   farmBlock: string;
+  /**
+   * The employee who did the harvest. Optional for back-compat — legacy entries
+   * predate worker attribution. `harvestedByName` snapshots the name at save time
+   * so later employee edits/deletes never rewrite historical records; the id links
+   * back to the employee for per-worker performance rollups (see Payroll).
+   */
+  harvestedById?: string;
+  harvestedByName?: string;
   plants: number;
   /**
    * Date the plants/batch flowered. Dragon fruit ripens ~30 days after

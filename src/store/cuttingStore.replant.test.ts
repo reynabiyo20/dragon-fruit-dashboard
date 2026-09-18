@@ -82,6 +82,32 @@ describe('cutting batch replant allocation → planted flow', () => {
     expect(inExpenseTaxonomy).toBe(true);
   });
 
+  it('creating a batch with a NEW variety auto-creates its Cuttings inventory row', () => {
+    // Start with no inventory rows so we prove the row is created, not merged.
+    useInventoryStore.setState({ items: [], _seeded: 999 });
+    const longAgo = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    useCuttingStore.getState().addBatch({
+      subcategory: 'Palora Yellow', // a variety with no pre-existing inventory row
+      cuttingType: 'Grafted with Roots',
+      harvestDate: longAgo, dateSourced: longAgo, dateGrafted: '',
+      quantitySourced: 20, sourceCostPerCutting: 40, graftCostPerCutting: 5,
+      rootWeeks: 3, quantitySold: 0, notes: '',
+    });
+
+    const row = useInventoryStore.getState().findByCategorySub(CUTTINGS_PRODUCT_TYPE, 'Palora Yellow');
+    expect(row).toBeDefined();
+    expect(row?.category).toBe(CUTTINGS_PRODUCT_TYPE);
+    expect(row?.unit).toBe('piece');
+    // Unit cost seeded from the batch's per-cutting cost (source + graft).
+    expect(row?.unitCost).toBe(45);
+    // Sellable pools are still zero at creation — packing credits availableForSale.
+    expect(row?.packed ?? 0).toBe(0);
+    expect(row?.availableForSale ?? 0).toBe(0);
+    expect(row?.breedingStock ?? 0).toBe(0);
+    // The matching sellable product is created too.
+    expect(useProductStore.getState().findByCategorySub(CUTTINGS_PRODUCT_TYPE, 'Palora Yellow')).toBeDefined();
+  });
+
   it('flagging For Replant keeps rooted-ready status and sets allocation', () => {
     const b = addRootedReadyBatch();
     useCuttingStore.getState().allocateBatch(b.id, CUTTING_ALLOCATION_REPLANT);

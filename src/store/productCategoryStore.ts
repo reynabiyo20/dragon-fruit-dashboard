@@ -40,7 +40,8 @@ interface ProductCategoryState {
 }
 
 // Bump to re-seed existing users with the updated taxonomy
-const SEED_VERSION = 1;
+// v2: 30 real dragon-fruit varieties from the bookkeeping sheet
+const SEED_VERSION = 2;
 
 function entry(category: string, subcategory: string): ProductCategoryEntry {
   return { id: generateId(), category, subcategory, createdAt: now(), updatedAt: now() };

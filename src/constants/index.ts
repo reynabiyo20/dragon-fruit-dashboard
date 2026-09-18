@@ -52,7 +52,7 @@ export const SALE_TYPE_OPTIONS = toOptions(SALE_TYPES);
 // Seed values for the editable employee-type option store (see optionStores.ts)
 export const EMPLOYEE_TYPES = ['Full Time', 'Part Time', 'Contractual', 'Seasonal'] as const;
 // Seed values for the editable employee-position option store
-export const EMPLOYEE_POSITIONS = ['Farmer', 'Farm Manager', 'Sales', 'Admin', 'Driver'] as const;
+export const EMPLOYEE_POSITIONS = ['Owner', 'Farmer', 'Farm Manager', 'Sales Person', 'Sales', 'Admin', 'Driver'] as const;
 
 // ─── Units (products & inventory) ────────────────────────────────────────────
 export const UNIT_VALUES = [
@@ -74,9 +74,12 @@ export const INVENTORY_CATEGORY_OPTIONS = toOptions(INVENTORY_CATEGORIES);
 // The dragon-fruit varieties, reused as subcategories for the Fruit & Cuttings
 // categories and by the cuttings tracker.
 export const DRAGON_FRUIT_VARIETIES = [
-  'Thai White',
-  'Variety 2', 'Variety 3', 'Variety 4', 'Variety 5', 'Variety 6', 'Variety 7', 'Variety 8',
-  'Variety 9', 'Variety 10', 'Variety 11', 'Variety 12', 'Variety 13', 'Variety 14', 'Variety 15',
+  'Thai White', 'Vietnamese White', 'Moroccan Red', 'Red Jaina', 'Philippine Purple',
+  'American Beauty', 'Sugar Dragon', 'Ecuador Palora', 'AX Hybrid', 'Asunta 5 Paco',
+  'Physical Graffiti', 'Siam Magenta', 'Honey White', 'Nicaraguan Red', 'Australian Isis Yellow',
+  "Halley's Comet", 'Delight', 'Voodoo Child', 'Rainbow Dragon', 'Seoul Kitchen',
+  'Purple Haze', 'Dark Star', 'Guatemalan Red', 'Condon', 'Zamora',
+  'Bruni', 'Connie Mayer', 'Zebra', 'Yellow Dragon', 'Orejona',
 ] as const;
 
 // ─── Product taxonomy (type → subcategory) ────────────────────────────────────
@@ -100,6 +103,29 @@ export const PRODUCT_CATEGORY_TYPES = [
 export const FERTILIZER_VARIETIES = [
   'Magnesium', 'Vermicast Worm', 'Cocopeat', 'Chicken Manure', 'Rice Hull',
   'CRH', 'Neem Oil', 'Nordox', 'Carbomax',
+] as const;
+
+// ─── Expense accounting classification & type (editable option lists) ──────────
+/**
+ * Accounting classification of an expense (how it's treated in the books) and
+ * its cost behavior. Seeded from the bookkeeping sheet; both are runtime-editable
+ * via their option stores, so the user can add new ones and they cascade onto
+ * existing expenses on rename.
+ */
+export const ACCOUNTING_CLASSIFICATIONS = [
+  'Capital Expenditure (CapEx)',
+  'Operating Expense (OpEx)',
+  'Cost of Goods Sold (COGS)',
+  'Operating Expense (OpEx) / Selling',
+  'Operating Expense (OpEx) / Repair',
+  'Operating Expense (OpEx) / Supply',
+  'Operating Expense (OpEx) / Overhead',
+  'Operating Expense (OpEx) / Shipping',
+  'Capital Expenditure or OpEx',
+] as const;
+
+export const EXPENSE_TYPES = [
+  'Fixed', 'Variable', 'Semi-Variable', 'Fixed / Variable',
 ] as const;
 
 /**

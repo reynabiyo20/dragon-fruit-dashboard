@@ -125,7 +125,7 @@ export function EmployeeForm({ employee, onClose }: EmployeeFormProps) {
       </div>
 
       {/* Auto-calculated read-only */}
-      <div className="grid grid-cols-2 gap-4 p-3 bg-green-50 rounded-lg border border-green-100">
+      <div className="grid grid-cols-2 gap-4 p-3 bg-primary-50 rounded-lg border border-primary-100">
         <DisplayField label="Weekly Rate (auto)" value={formatPHP(weeklyRate)} highlight />
         <DisplayField label="Monthly Salary (auto)" value={formatPHP(monthlySalary)} highlight />
       </div>

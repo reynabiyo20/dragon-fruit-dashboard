@@ -91,7 +91,7 @@ export function BusinessPage() {
           />
           <div className="mt-3 flex flex-wrap gap-2">
             {info.banks.map((b) => (
-              <span key={b} className="px-2.5 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">{b}</span>
+              <span key={b} className="px-2.5 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">{b}</span>
             ))}
           </div>
         </SectionCard>

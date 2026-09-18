@@ -142,6 +142,23 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
     }
   })();
 
+  /**
+   * Create a brand-new cutting variety from the Variety picker: add it to the
+   * managed taxonomy and notify the user. Only announces genuinely new varieties
+   * (case-insensitive) so re-selecting an existing one stays quiet.
+   */
+  const handleCreateVariety = (raw: string) => {
+    const name = raw.trim();
+    if (!name) return;
+    const alreadyExists = varietyOptions.some(
+      (o) => o.value.trim().toLowerCase() === name.toLowerCase(),
+    );
+    addCategoryEntry(CUTTINGS_PRODUCT_TYPE, name);
+    if (!alreadyExists) {
+      toast.success(`Added new cutting variety "${name}"`, { icon: '🌱', duration: 4000 });
+    }
+  };
+
   const onSubmit = (data: FormValues) => {
     if (batch) {
       // Editing: map the primary date input back to the right field for the
@@ -170,7 +187,7 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
           value={watch('subcategory')}
           options={varietyOptions}
           onChange={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
-          onCreate={(v) => addCategoryEntry(CUTTINGS_PRODUCT_TYPE, v)}
+          onCreate={handleCreateVariety}
           placeholder="Select variety…"
           error={errors.subcategory?.message}
           createLabel="+ Create new variety…"
@@ -190,7 +207,7 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
       {/* Internal batches: show the derived planting/acquisition date and the
           mandatory callusing/nursery hold that precedes the growth countdown. */}
       {isInternal && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3 bg-amber-50 rounded-lg border border-amber-100">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3 bg-gold-50 rounded-lg border border-gold-100">
           <DisplayField
             label={`Nursery / Callusing Hold (${CUTTING_CALLUSING_DAYS} days)`}
             value={dateSourced ? `${formatDate(dateSourced)} → ${plantingDate ? formatDate(plantingDate) : '—'}` : 'Set harvest date'}
@@ -268,7 +285,7 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
       )}
 
       {/* Auto-calculated preview */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-3 bg-green-50 rounded-lg border border-green-100">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-3 bg-primary-50 rounded-lg border border-primary-100">
         <DisplayField
           label="Total Batch Cost (qty × cost/cutting)"
           value={formatPHP(totalCost)}

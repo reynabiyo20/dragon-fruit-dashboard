@@ -30,6 +30,12 @@ describe('SimilarEntryHint', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('renders nothing when the value already equals an option exactly (a selection)', () => {
+    // e.g. the user picked "Thai White" from the dropdown — nothing to advise.
+    const { container } = render(<SimilarEntryHint value="Thai White" options={OPTIONS} noun="variety" />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('renders nothing for values under 2 chars', () => {
     const { container } = render(<SimilarEntryHint value="w" options={OPTIONS} />);
     expect(container).toBeEmptyDOMElement();

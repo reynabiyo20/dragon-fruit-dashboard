@@ -290,6 +290,20 @@ export const useCuttingStore = create<CuttingState>()(
           // Expense taxonomy (drives the Expense form dropdowns) so the variety is
           // selectable when recording a cutting purchase.
           useExpenseCategoryStore.getState().addEntry(CUTTINGS_PRODUCT_TYPE, batch.subcategory);
+          // Inventory row: create the Cuttings row for this variety now, so a
+          // brand-new variety shows up under Cuttings in Inventory the moment its
+          // batch is created — not only later when it's packed/allocated. Seed the
+          // row's unit cost from the batch's per-cutting cost if it's still zero.
+          // The sellable pools (packed / availableForSale / breedingStock) stay at
+          // zero here; packing credits `availableForSale`, allocation credits
+          // `breedingStock` — that behavior is unchanged.
+          const invRow = useInventoryStore
+            .getState()
+            .ensureRow(CUTTINGS_PRODUCT_TYPE, batch.subcategory, 'piece');
+          const perCuttingCost = batch.sourceCostPerCutting + batch.graftCostPerCutting;
+          if (invRow.unitCost === 0 && perCuttingCost > 0) {
+            useInventoryStore.getState().updateItem(invRow.id, { unitCost: perCuttingCost });
+          }
         }
         return batch;
       },

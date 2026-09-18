@@ -17,25 +17,26 @@
  * and surfaced to the user as a warning rather than silently ignored.
  */
 import toast from 'react-hot-toast';
-import type { Sale, SaleItem, Expense } from '../types';
-import { INVENTORY_LINKED_TYPES, CUTTINGS_PRODUCT_TYPE } from '../constants';
-import { categoryLabel } from '../utils/format';
+import type { Sale, SaleItem, Expense, CuttingPurchaseState } from '../types';
+import { CUTTINGS_PRODUCT_TYPE } from '../constants';
 import { useInventoryStore } from './inventoryStore';
 import { useProductStore } from './productStore';
 
-/** True when a category is one we mirror into inventory (not Drink/Other). */
-function isInventoryLinkedType(category: string): boolean {
-  return (INVENTORY_LINKED_TYPES as readonly string[]).includes(category);
-}
-
 /**
- * Apply a sale's effect on inventory `sold`.
- * @param sign +1 when recording a sale, -1 when reversing one (edit/delete).
- * Returns the human labels of lines that had no matching inventory row.
+ * Inspect a sale's inventory-linked lines and report any with no matching
+ * inventory row. This NO LONGER changes `sold`: every inventory-linked product
+ * (Cuttings / Fruit / Fertilizer) now moves out of inventory on "Received by
+ * Customer", driven by the delivery cascade (applyDeliveryToAvailable) — never
+ * on the sale record itself. This keeps a sale that hasn't been received yet
+ * from prematurely depleting stock.
+ *
+ * Returns the human labels of lines whose product can't be resolved (so we
+ * can't map them to a (category, subcategory) inventory row). Every resolvable
+ * product is inventory-tracked now — its row is auto-created on receipt — so the
+ * only "unmatched" case left is a line with no product behind it.
  */
-function applySaleToInventory(sale: Pick<Sale, 'items'>, sign: 1 | -1): string[] {
+function collectUnmatchedSaleLines(sale: Pick<Sale, 'items'>): string[] {
   const { getProduct } = useProductStore.getState();
-  const { findByCategorySub, adjustSold } = useInventoryStore.getState();
   const unmatched: string[] = [];
 
   sale.items.forEach((item: SaleItem) => {
@@ -44,49 +45,39 @@ function applySaleToInventory(sale: Pick<Sale, 'items'>, sign: 1 | -1): string[]
 
     const product = item.productId ? getProduct(item.productId) : undefined;
     // Without a resolvable product we can't know the (category, subcategory) pair.
-    if (!product) {
-      unmatched.push(item.productName || 'Unknown product');
-      return;
-    }
-    // Cuttings move on DELIVERY, not on the sale itself — a non-delivered cutting
-    // sale must leave inventory untouched. Their `sold` is driven by the delivery
-    // cascade below (recordDeliveryInventory), so skip them here.
-    if (product.category === CUTTINGS_PRODUCT_TYPE) return;
-    // Drink / Other aren't inventory-tracked here — skip silently, no warning.
-    if (!isInventoryLinkedType(product.category)) return;
-
-    const row = findByCategorySub(product.category, product.subcategory);
-    if (!row) {
-      unmatched.push(categoryLabel(product.category, product.subcategory));
-      return;
-    }
-    adjustSold(row.id, sign * qty);
+    if (!product) unmatched.push(item.productName || 'Unknown product');
   });
 
   return unmatched;
 }
 
-/** Surface a single grouped warning toast for lines with no inventory row. */
-function warnUnmatched(labels: string[], context: 'sold' | 'purchased'): void {
+/** Surface a single grouped warning toast for sale lines with no product behind them. */
+function warnUnmatched(labels: string[]): void {
   if (labels.length === 0) return;
-  const unique = [...new Set(labels)];
-  const list = unique.join(', ');
-  const verb = context === 'sold' ? 'deducted from' : 'added to';
+  const list = [...new Set(labels)].join(', ');
   toast(
-    `No inventory row for ${list}. Nothing was ${verb} inventory — update it manually.`,
+    `Couldn't link ${list} to a product, so it won't be tracked in inventory. Pick a product for that line.`,
     { icon: '⚠️', duration: 6000 },
   );
 }
 
-/** Record a new sale: deduct each line from inventory `sold`. */
+/**
+ * Record a new sale. Inventory `sold` is NOT changed here — it only moves when
+ * the sale is marked "Received by Customer" (see recordDeliveryInventory, which
+ * auto-creates the inventory row for any product if needed). We still warn about
+ * lines that have no product behind them, since those can't be tracked.
+ */
 export function recordSaleInventory(sale: Pick<Sale, 'items'>): void {
-  const unmatched = applySaleToInventory(sale, +1);
-  warnUnmatched(unmatched, 'sold');
+  warnUnmatched(collectUnmatchedSaleLines(sale));
 }
 
-/** Reverse a sale (delete, or the "before" side of an edit): add quantities back. */
-export function reverseSaleInventory(sale: Pick<Sale, 'items'>): void {
-  applySaleToInventory(sale, -1);
+/**
+ * Reverse a sale (delete, or the "before" side of an edit). No `sold` change is
+ * needed because the sale record never moved `sold`; the received cascade owns
+ * that and is reversed separately when a received sale is deleted/edited.
+ */
+export function reverseSaleInventory(_sale: Pick<Sale, 'items'>): void {
+  // Intentionally a no-op: sold is driven solely by the received cascade.
 }
 
 /** A normalized purchase line: (category, subcategory, quantity). */
@@ -96,6 +87,8 @@ interface PurchaseLine {
   quantity: number;
   unit: string;
   unitCost: number;
+  /** Cuttings only: 'packed' | 'bare'. Defaults to 'packed' when unspecified. */
+  cuttingState: CuttingPurchaseState;
 }
 
 /**
@@ -105,7 +98,7 @@ interface PurchaseLine {
  * newly-auto-created inventory row can be seeded with them.
  */
 function purchaseLines(
-  expense: Pick<Expense, 'category' | 'subcategory' | 'quantity' | 'unit' | 'unitPrice' | 'items'>,
+  expense: Pick<Expense, 'category' | 'subcategory' | 'quantity' | 'unit' | 'unitPrice' | 'items' | 'cuttingState'>,
 ): PurchaseLine[] {
   if (expense.items && expense.items.length > 0) {
     return expense.items.map((it) => ({
@@ -114,6 +107,7 @@ function purchaseLines(
       quantity: Number(it.quantity) || 0,
       unit: it.unit ?? '',
       unitCost: Number(it.unitPrice) || 0,
+      cuttingState: it.cuttingState ?? 'packed',
     }));
   }
   return [
@@ -123,6 +117,7 @@ function purchaseLines(
       quantity: Number(expense.quantity) || 0,
       unit: expense.unit ?? '',
       unitCost: Number(expense.unitPrice) || 0,
+      cuttingState: expense.cuttingState ?? 'packed',
     },
   ];
 }
@@ -137,8 +132,13 @@ function isPurchase(line: PurchaseLine): boolean {
 
 type ExpenseInventoryInput = Pick<
   Expense,
-  'category' | 'subcategory' | 'quantity' | 'unit' | 'unitPrice' | 'items'
+  'category' | 'subcategory' | 'quantity' | 'unit' | 'unitPrice' | 'items' | 'cuttingState'
 >;
+
+/** True when a purchase line is a cuttings line (routed by packed/bare state). */
+function isCuttingLine(line: PurchaseLine): boolean {
+  return line.category.trim().toLowerCase() === CUTTINGS_PRODUCT_TYPE.toLowerCase();
+}
 
 /**
  * Record a new purchase into inventory. EVERY purchased line (any category)
@@ -148,10 +148,27 @@ type ExpenseInventoryInput = Pick<
  * unit and unit cost; otherwise the existing row's `purchased` is increased.
  */
 export function recordExpenseInventory(expense: ExpenseInventoryInput): void {
-  const { findByCategorySub, adjustPurchased, addItem } = useInventoryStore.getState();
+  const {
+    findByCategorySub, adjustPurchased, addItem, ensureRow, adjustPacked,
+    adjustAvailableForSale, adjustNeedsPacking,
+  } = useInventoryStore.getState();
 
   purchaseLines(expense).forEach((line) => {
     if (!isPurchase(line)) return;
+
+    // Cuttings bought from a customer don't go into the generic `purchased`
+    // pool — they land in a cutting pool based on whether they arrive packed
+    // (ready to sell) or bare (still need packing). Both feed endingQty.
+    if (isCuttingLine(line)) {
+      const row = ensureRow(line.category, line.subcategory, line.unit || 'piece');
+      if (line.cuttingState === 'bare') {
+        adjustNeedsPacking(row.id, line.quantity);
+      } else {
+        adjustPacked(row.id, line.quantity);
+        adjustAvailableForSale(row.id, line.quantity);
+      }
+      return;
+    }
 
     const row = findByCategorySub(line.category, line.subcategory);
     if (row) {
@@ -175,53 +192,90 @@ export function recordExpenseInventory(expense: ExpenseInventoryInput): void {
 
 /**
  * Reverse a purchase (delete, or the "before" side of an edit): subtract each
- * line's quantity from the matching inventory row's `purchased`. Never creates
- * rows — a purchase being reversed will have created its row on the original record.
+ * line's quantity from the matching inventory row's pool. Cuttings reverse from
+ * the same pool they were recorded into (packed+availableForSale, or
+ * needsPacking); everything else reverses from `purchased`. Never creates rows —
+ * a purchase being reversed will have created its row on the original record.
  */
 export function reverseExpenseInventory(expense: ExpenseInventoryInput): void {
-  const { findByCategorySub, adjustPurchased } = useInventoryStore.getState();
+  const {
+    findByCategorySub, adjustPurchased, adjustPacked, adjustAvailableForSale,
+    adjustNeedsPacking,
+  } = useInventoryStore.getState();
 
   purchaseLines(expense).forEach((line) => {
     if (!isPurchase(line)) return;
     const row = findByCategorySub(line.category, line.subcategory);
-    if (row) adjustPurchased(row.id, -line.quantity);
+    if (!row) return;
+
+    if (isCuttingLine(line)) {
+      if (line.cuttingState === 'bare') {
+        adjustNeedsPacking(row.id, -line.quantity);
+      } else {
+        adjustPacked(row.id, -line.quantity);
+        adjustAvailableForSale(row.id, -line.quantity);
+      }
+      return;
+    }
+    adjustPurchased(row.id, -line.quantity);
   });
 }
 
 /**
- * Delivery fulfillment → Available-Stock-for-Sale pool.
+ * "Received by Customer" fulfillment → inventory `sold` (and, for cuttings, the
+ * Available-Stock-for-Sale pool).
  *
- * When a cutting sale is marked delivered, the sold cutting quantities are
- * permanently removed from the Available-Stock-for-Sale pool for each variety.
- * Marking it undelivered (or deleting a delivered sale) returns the quantity.
+ * Everything the business sells is tracked in inventory, so when a sale line for
+ * ANY product is marked received, its quantity is added to that product's
+ * inventory row `sold` (which the ending-qty formula subtracts). If no inventory
+ * row exists yet for the product's (category, subcategory) — e.g. a one-off
+ * "Other → Jacket" — one is auto-created on receipt so the sale is reflected in
+ * inventory. Marking it not-received (or deleting a received sale) returns the
+ * quantity.
  *
- * @param sign -1 to deduct on delivery, +1 to return on un-deliver/reverse.
+ * Cuttings additionally draw down the packed Available-Stock-for-Sale pool, since
+ * that pool represents cuttings physically packed and ready to hand over.
+ *
+ * @param sign -1 to deduct on receive, +1 to return on un-receive/reverse.
  */
-function applyDeliveryToAvailable(sale: Pick<Sale, 'items'>, sign: 1 | -1): void {
+function applyReceivedToInventory(sale: Pick<Sale, 'items'>, sign: 1 | -1): void {
   const { getProduct } = useProductStore.getState();
-  const { findByCategorySub, adjustAvailableForSale, adjustSold } = useInventoryStore.getState();
+  const { findByCategorySub, ensureRow, adjustAvailableForSale, adjustSold } =
+    useInventoryStore.getState();
 
   sale.items.forEach((item: SaleItem) => {
     const qty = Number(item.quantity) || 0;
     if (qty <= 0) return;
     const product = item.productId ? getProduct(item.productId) : undefined;
-    if (!product || product.category !== CUTTINGS_PRODUCT_TYPE) return;
-    const row = findByCategorySub(product.category, product.subcategory);
-    if (!row) return; // no packed pool for this variety yet — nothing to deduct
-    // Delivering cuttings removes them from inventory. Increase `sold` (which the
-    // ending-qty formula subtracts) and reduce the sellable remainder. Reversing
-    // an un-deliver does the opposite. sign = -1 on deliver, +1 on reverse.
-    adjustSold(row.id, -sign * qty);       // deliver → +sold, reverse → -sold
-    adjustAvailableForSale(row.id, sign * qty); // deliver → -available, reverse → +available
+    // No resolvable product → can't map to an inventory row. (Warned at sale time.)
+    if (!product || !product.category) return;
+
+    // On receive, auto-create the row if missing so nothing sold is lost. On
+    // reverse the row must already exist (it was created on the original
+    // receive), so just look it up — nothing to do if it's somehow gone.
+    const row =
+      sign < 0
+        ? ensureRow(product.category, product.subcategory, product.unit)
+        : findByCategorySub(product.category, product.subcategory);
+    if (!row) return;
+
+    // Receiving removes stock from inventory. Increase `sold` (which the
+    // ending-qty formula subtracts). Reversing an un-receive does the opposite.
+    // sign = -1 on receive, +1 on reverse.
+    adjustSold(row.id, -sign * qty); // receive → +sold, reverse → -sold
+    // Cuttings also draw from the packed sellable pool.
+    if (product.category === CUTTINGS_PRODUCT_TYPE) {
+      adjustAvailableForSale(row.id, sign * qty); // receive → -available, reverse → +available
+    }
   });
 }
 
-/** Deduct delivered cutting quantities from the Available-Stock-for-Sale pool. */
+/** Record received quantities into inventory `sold` (+ draw the cutting pool). */
 export function recordDeliveryInventory(sale: Pick<Sale, 'items'>): void {
-  applyDeliveryToAvailable(sale, -1);
+  applyReceivedToInventory(sale, -1);
 }
 
-/** Return cutting quantities to the Available-Stock-for-Sale pool (un-deliver/reverse). */
+/** Return received quantities to inventory (un-receive / reverse). */
 export function reverseDeliveryInventory(sale: Pick<Sale, 'items'>): void {
-  applyDeliveryToAvailable(sale, +1);
+  applyReceivedToInventory(sale, +1);
 }

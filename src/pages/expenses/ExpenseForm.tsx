@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
-import type { Expense, ExpenseItem, Vendor } from '../../types';
+import type { Expense, ExpenseItem, Vendor, VendorSupply } from '../../types';
 import { useExpenseStore } from '../../store/expenseStore';
 import { useVendorStore } from '../../store/vendorStore';
 import { useProductStore } from '../../store/productStore';
@@ -13,12 +13,13 @@ import { EntityMatchSuggestions } from '../../components/forms/EntityMatchSugges
 import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import { InputField, SelectField, TextareaField, CheckboxField } from '../../components/forms/FormField';
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
+import { VendorSuppliesField } from '../../components/forms/VendorSuppliesField';
 import { Button } from '../../components/ui/Button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { formatPHP, formatDate, categoryLabel } from '../../utils/format';
 import { isFutureDate, todayISO } from '../../utils/date';
-import { useUnitStore } from '../../store/optionStores';
-import { PAYMENT_OPTIONS, MANUAL_ENTRY, INVENTORY_LINKED_TYPES } from '../../constants';
+import { useUnitStore, useAccountingClassificationStore, useExpenseTypeStore } from '../../store/optionStores';
+import { PAYMENT_OPTIONS, MANUAL_ENTRY, INVENTORY_LINKED_TYPES, CUTTINGS_PRODUCT_TYPE } from '../../constants';
 import { syncTaxonomy } from '../../store/taxonomySync';
 import { unlinkResellProduct } from '../../store/productLink';
 
@@ -72,6 +73,8 @@ const schema = z
     amount: z.coerce.number().min(0),
     description: z.string(),
     paymentMethod: z.string().min(1, 'Payment method is required'),
+    accountingClassification: z.string(),
+    expenseType: z.string(),
     notes: z.string(),
   })
   .superRefine((d, ctx) => {
@@ -79,8 +82,23 @@ const schema = z
     if (d.category.trim().length === 0) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['category'], message: 'Category is required' });
     }
-    if (d.amount < 0.01) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['amount'], message: 'Amount must be greater than 0' });
+    // The effective amount is derived from Quantity × Price when both are set
+    // (the quantifiable path, where Amount is read-only), otherwise the amount
+    // typed directly (service / delivery / air-fare). Validate the effective
+    // value so the read-only quantifiable Amount never triggers a spurious error.
+    const qty = Number(d.quantity) || 0;
+    const price = Number(d.unitPrice) || 0;
+    // When the user has started a quantifiable line (entered a quantity OR a
+    // price) point the error at the missing input rather than the derived amount.
+    if (qty > 0 && price <= 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['unitPrice'], message: 'Price is required' });
+    } else if (price > 0 && qty <= 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['quantity'], message: 'Quantity is required' });
+    } else {
+      const effectiveAmount = qty > 0 && price > 0 ? qty * price : Number(d.amount) || 0;
+      if (effectiveAmount < 0.01) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['amount'], message: 'Amount must be greater than 0' });
+      }
     }
     // Vendor required only for categories that aren't in the optional list
     if (!OPTIONAL_VENDOR_CATEGORIES.includes(d.category) && d.vendorName.trim().length === 0) {
@@ -114,6 +132,10 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
   const { categories, subcategoriesFor, addEntry, isQuantifiable } = useExpenseCategoryStore();
   const unitOptions = useUnitStore((s) => s.values).map((v) => ({ value: v, label: v }));
   const addUnit = useUnitStore((s) => s.add);
+  const acOptions = useAccountingClassificationStore((s) => s.values).map((v) => ({ value: v, label: v }));
+  const addAccountingClassification = useAccountingClassificationStore((s) => s.add);
+  const expenseTypeOptions = useExpenseTypeStore((s) => s.values).map((v) => ({ value: v, label: v }));
+  const addExpenseType = useExpenseTypeStore((s) => s.add);
   const upsertSellableProduct = useProductStore((s) => s.upsertFromPurchase);
   const findSellableProduct = useProductStore((s) => s.findByCategorySub);
   const [isPaid, setIsPaid] = useState(expense?.paid ?? false);
@@ -121,6 +143,12 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
   // list. Defaults on when editing an expense whose product already exists there.
   const [isResell, setIsResell] = useState(
     !!expense && !!findSellableProduct(expense.category, expense.subcategory),
+  );
+  // Cuttings only: whether the purchased cuttings arrive packed (ready to sell)
+  // or bare (still need packing). Defaults to 'packed'. Drives which inventory
+  // pool the quantity lands in (packed/Ready-for-Sale vs needsPacking).
+  const [cuttingState, setCuttingState] = useState<'packed' | 'bare'>(
+    expense?.cuttingState ?? 'packed',
   );
   // Holds validated form data pending a future-date confirmation (null = none)
   const [pendingFutureData, setPendingFutureData] = useState<FormValues | null>(null);
@@ -152,6 +180,8 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       amount: expense?.amount ?? 0,
       description: expense?.description ?? '',
       paymentMethod: expense?.paymentMethod ?? 'Cash',
+      accountingClassification: expense?.accountingClassification ?? '',
+      expenseType: expense?.expenseType ?? '',
       notes: expense?.notes ?? '',
     },
   });
@@ -164,6 +194,8 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
 
   const selectedCategory = watch('category');
   const selectedSubcategory = watch('subcategory');
+  const accountingClassification = watch('accountingClassification');
+  const expenseType = watch('expenseType');
   const quantity = Number(watch('quantity')) || 0;
   const unitPrice = Number(watch('unitPrice')) || 0;
   const vendorId = watch('vendorId');
@@ -171,14 +203,19 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
 
   const isDelivery = selectedCategory === DELIVERY_CATEGORY;
   const isAirFare = selectedCategory === AIR_FARE_CATEGORY;
-  // Show Qty + Unit Price for categories flagged quantifiable (materials) OR any
-  // product/inventory-linked type (Cuttings/Fruit/Fertilizer) — buying one of
-  // those is stock, so it must capture quantity and cascade into Inventory even
-  // if the category's quantifiable flag happens to be off.
+  const isCuttingCategory = selectedCategory.trim().toLowerCase() === CUTTINGS_PRODUCT_TYPE.toLowerCase();
+  // Show Qty + Unit Price (which drives the Inventory cascade) whenever the
+  // purchase is for a SPECIFIC product — i.e. a subcategory is selected — or the
+  // category is a quantifiable material / inventory-linked product type. A
+  // subcategorized purchase is a specific item that must be accounted for as
+  // stock, regardless of the category's quantifiable flag.
   const isInventoryLinkedCategory =
     ALWAYS_RESELL_CATEGORIES.includes(selectedCategory.trim());
+  const hasSpecificProduct = !!selectedSubcategory.trim();
   const showQtyPrice =
-    !isDelivery && !isAirFare && (isQuantifiable(selectedCategory) || isInventoryLinkedCategory);
+    !isDelivery &&
+    !isAirFare &&
+    (isQuantifiable(selectedCategory) || isInventoryLinkedCategory || hasSpecificProduct);
   const vendorOptional = OPTIONAL_VENDOR_CATEGORIES.includes(selectedCategory);
   const existingSubcategories = subcategoriesFor(selectedCategory);
   const subcategoryOptions = existingSubcategories.map((s) => ({ value: s, label: s }));
@@ -212,6 +249,9 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
 
   // ── Manual vendor entry matching (recommend, don't enforce) ─────────────────
   const isManualVendor = vendorId === MANUAL_ENTRY;
+  // Supplies the user assigns to a NEW vendor being created inline. Persisted to
+  // the vendor on save and cascaded into the taxonomy by VendorSuppliesField.
+  const [newVendorSupplies, setNewVendorSupplies] = useState<VendorSupply[]>([]);
   const { matches: vendorMatches, exact: exactVendorMatch } = useEntityMatch(
     vendorName, vendors, (v) => v.vendor, isManualVendor
   );
@@ -239,9 +279,10 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       toast.success(`Selected existing vendor "${existing.vendor}"`);
       return;
     }
-    const created = addVendor({ vendor: name, contact: '', phone: '', supplies: [], notes: '' });
+    const created = addVendor({ vendor: name, contact: '', phone: '', supplies: newVendorSupplies, notes: '' });
     setValue('vendorId', created.id);
     setValue('vendorName', created.vendor);
+    setNewVendorSupplies([]);
     toast.success(`Added "${created.vendor}" to your Vendors`, { duration: 4000 });
   };
 
@@ -329,7 +370,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         resolvedVendorId = existing.id;
         resolvedVendorName = existing.vendor;
       } else {
-        const created = addVendor({ vendor: resolvedVendorName, contact: '', phone: '', supplies: [], notes: '' });
+        const created = addVendor({ vendor: resolvedVendorName, contact: '', phone: '', supplies: newVendorSupplies, notes: '' });
         resolvedVendorId = created.id;
         newVendorCreated = true;
       }
@@ -394,6 +435,8 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       items: cleanItems,
       amount,
       paymentMethod: data.paymentMethod,
+      accountingClassification: data.accountingClassification,
+      expenseType: data.expenseType,
       notes: data.notes,
       paid: isPaid,
     };
@@ -481,9 +524,13 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       syncTaxonomy(effectiveCategory.trim(), effectiveSubcategory.trim());
     }
 
-    // For quantifiable (material) categories, quantity, unit and price are all
-    // required so the purchase is fully specified and feeds inventory/price history.
-    if (showQtyPrice) {
+    // For quantifiable (material) categories and product types, quantity, unit and
+    // price are all required so the purchase is fully specified and feeds
+    // inventory/price history. For a merely subcategorized line under a
+    // non-quantifiable category they're optional (a subcategorized service/lump
+    // sum), but if a quantity IS entered it still cascades to inventory.
+    const requireQtyPrice = isQuantifiable(selectedCategory) || isInventoryLinkedCategory;
+    if (showQtyPrice && requireQtyPrice) {
       if (data.quantity <= 0) { toast.error('Quantity is required'); return; }
       if (!data.unit.trim()) { toast.error('Unit is required'); return; }
       if (data.unitPrice <= 0) { toast.error('Price / unit is required'); return; }
@@ -516,12 +563,21 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         resolvedVendorId = existing.id;
         resolvedVendorName = existing.vendor;
       } else {
+        // Seed the new vendor's supplies with the user's up-front selections,
+        // plus this purchase's own category (unless vendor is optional) —
+        // de-duplicated so we never list the same (category, subcategory) twice.
+        const seededSupplies: VendorSupply[] = [...newVendorSupplies];
+        if (!vendorOptional && effectiveCategory) {
+          const dup = seededSupplies.some(
+            (s) => s.category === effectiveCategory && s.subcategory === effectiveSubcategory,
+          );
+          if (!dup) seededSupplies.push({ category: effectiveCategory, subcategory: effectiveSubcategory });
+        }
         const created = addVendor({
           vendor: resolvedVendorName,
           contact: '',
           phone: '',
-          // Seed the new vendor's supplies with this purchase (unless vendor is optional)
-          supplies: vendorOptional ? [] : [{ category: effectiveCategory, subcategory: effectiveSubcategory }],
+          supplies: seededSupplies,
           notes: '',
         });
         resolvedVendorId = created.id;
@@ -547,8 +603,13 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       unitPrice: recordUnitPrice,
       amount: data.amount,
       paymentMethod: data.paymentMethod,
+      accountingClassification: data.accountingClassification,
+      expenseType: data.expenseType,
       notes: data.notes,
       paid: isPaid,
+      // Cuttings only: record whether the purchase is packed or bare so the
+      // inventory cascade routes it to the right pool. Left undefined otherwise.
+      ...(isCuttingCategory && showQtyPrice ? { cuttingState } : {}),
     };
 
     if (expense) {
@@ -639,7 +700,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
           type="button"
           onClick={() => setMode('single')}
           className={[
-            'px-3 py-1.5 text-sm rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400',
+            'px-3 py-1.5 text-sm rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400',
             mode === 'single' ? 'bg-white text-gray-900 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700',
           ].join(' ')}
         >
@@ -649,7 +710,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
           type="button"
           onClick={() => setMode('itemized')}
           className={[
-            'px-3 py-1.5 text-sm rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400',
+            'px-3 py-1.5 text-sm rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400',
             mode === 'itemized' ? 'bg-white text-gray-900 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700',
           ].join(' ')}
         >
@@ -664,7 +725,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             <div>
               <label className="text-sm font-medium text-gray-700">Vendor <span className="text-red-500">*</span></label>
               <select
-                className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
                 value={vendorId}
                 onChange={handleVendorChange}
               >
@@ -676,43 +737,51 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
                   ))}
                 <option value={MANUAL_ENTRY}>Enter manually…</option>
               </select>
-              {isManualVendor && (
-                <div className="mt-2 space-y-2">
-                  <InputField
-                    label="Vendor Name"
-                    required
-                    autoFocus
-                    {...register('vendorName')}
-                    placeholder="Type vendor name…"
-                  />
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs text-gray-500">
-                      Save this vendor to pick and add products for the purchase below.
-                    </p>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="shrink-0 whitespace-nowrap"
-                      onClick={saveManualVendor}
-                      disabled={!(vendorName ?? '').trim()}
-                    >
-                      Save to Vendors
-                    </Button>
-                  </div>
-                  <EntityMatchSuggestions
-                    query={vendorName}
-                    matches={vendorMatches}
-                    exact={exactVendorMatch}
-                    labelOf={(v) => v.vendor}
-                    keyOf={(v) => v.id}
-                    onUseExisting={useExistingVendor}
-                    noun="vendor"
-                  />
-                </div>
-              )}
             </div>
           </div>
+
+          {/* Manual vendor entry — full width so the supplies picker isn't
+              squeezed into the half-width Vendor column above. */}
+          {isManualVendor && (
+            <div className="space-y-2 rounded-lg border border-gray-100 bg-gray-50/60 p-3">
+              <InputField
+                label="Vendor Name"
+                required
+                autoFocus
+                {...register('vendorName')}
+                placeholder="Type vendor name…"
+              />
+              <VendorSuppliesField
+                value={newVendorSupplies}
+                onChange={setNewVendorSupplies}
+                hint="Optional — the categories & subcategories this vendor supplies. Saved to the vendor for future suggestions."
+              />
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-gray-500">
+                  Save this vendor to pick and add products for the purchase below.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0 whitespace-nowrap"
+                  onClick={saveManualVendor}
+                  disabled={!(vendorName ?? '').trim()}
+                >
+                  Save to Vendors
+                </Button>
+              </div>
+              <EntityMatchSuggestions
+                query={vendorName}
+                matches={vendorMatches}
+                exact={exactVendorMatch}
+                labelOf={(v) => v.vendor}
+                keyOf={(v) => v.id}
+                onUseExisting={useExistingVendor}
+                noun="vendor"
+              />
+            </div>
+          )}
 
           <ProductItemsPicker
             vendorId={isManualVendor ? '' : vendorId}
@@ -729,6 +798,28 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             error={errors.paymentMethod?.message}
             {...register('paymentMethod')}
           />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <CreatableSelect
+              label="Accounting Classification"
+              value={accountingClassification}
+              options={acOptions}
+              onChange={(v) => setValue('accountingClassification', v)}
+              onCreate={(v) => { addAccountingClassification(v); setValue('accountingClassification', v); }}
+              placeholder="Optional — e.g. Operating Expense (OpEx)"
+              createLabel="Add new classification…"
+              newFieldLabel="New accounting classification"
+            />
+            <CreatableSelect
+              label="Expense Type"
+              value={expenseType}
+              options={expenseTypeOptions}
+              onChange={(v) => setValue('expenseType', v)}
+              onCreate={(v) => { addExpenseType(v); setValue('expenseType', v); }}
+              placeholder="Optional — e.g. Fixed"
+              createLabel="Add new expense type…"
+              newFieldLabel="New expense type"
+            />
+          </div>
           <InputField label="Description" {...register('description')} placeholder="Optional — defaults to an item summary" />
           <CheckboxField label="Paid" checked={isPaid} onChange={setIsPaid} />
           <TextareaField label="Notes" {...register('notes')} rows={2} />
@@ -828,7 +919,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
           {vendorOptional && <span className="text-gray-400 font-normal"> (optional)</span>}
         </label>
         <select
-          className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+          className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
           value={vendorId}
           onChange={handleVendorChange}
         >
@@ -850,14 +941,23 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         )}
 
         {noVendorMatches && !vendorOptional && (
-          <p className="text-xs text-amber-600 mt-1">
-            No vendors supply "{selectedCategory}". Showing all vendors — or enter one manually.
-          </p>
+          vendorId && vendorId !== MANUAL_ENTRY ? (
+            // A real vendor is selected: on save this purchase adds the
+            // category/subcategory to that vendor's supplies (auto-learn), so
+            // reassure the user instead of implying nothing is captured.
+            <p className="text-xs text-gray-500 mt-1">
+              "{selectedCategory}{selectedSubcategory ? ` – ${selectedSubcategory}` : ''}" will be added to this vendor's supplies when you save.
+            </p>
+          ) : (
+            <p className="text-xs text-gold-600 mt-1">
+              No vendors supply "{selectedCategory}" yet. Pick a vendor to record it under, or enter one manually.
+            </p>
+          )
         )}
 
         {/* Manual vendor entry with suggestions */}
         {showManualVendorFields && (
-          <div className="mt-2 space-y-2">
+          <div className="mt-2 space-y-2 rounded-lg border border-gray-100 bg-gray-50/60 p-3">
             <InputField
               label="Vendor Name"
               required={!vendorOptional}
@@ -865,6 +965,12 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
               error={errors.vendorName?.message}
               {...register('vendorName')}
               placeholder="Type vendor name…"
+            />
+
+            <VendorSuppliesField
+              value={newVendorSupplies}
+              onChange={setNewVendorSupplies}
+              hint="Optional — the categories & subcategories this vendor supplies. Saved to the vendor for future suggestions."
             />
 
             <EntityMatchSuggestions
@@ -922,7 +1028,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         /* ── Quantifiable: Quantity + Unit × Unit Price → Amount ─────────── */
         <div className="space-y-3">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <InputField label="Quantity" required type="number" step="0.01" {...register('quantity')} placeholder="e.g. 5" />
+          <InputField label="Quantity" required type="number" step="0.01" error={errors.quantity?.message} {...register('quantity')} placeholder="e.g. 5" />
           <CreatableSelect
             label="Unit"
             required
@@ -940,20 +1046,58 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             required
             type="number"
             step="0.01"
+            error={errors.unitPrice?.message}
             {...register('unitPrice')}
             placeholder="e.g. 250"
             hint={prefilledPrice !== undefined ? `Default: ${formatPHP(prefilledPrice)} — editable` : undefined}
           />
+          {/* Amount is auto-calculated from Quantity × Price for quantifiable
+              purchases — read-only so it can't drift from the line math (which
+              was the source of the confusing "amount must be > 0" error). */}
           <InputField
             label="Amount (₱)"
             type="number"
             step="0.01"
-            required
+            readOnly
+            value={quantity > 0 && unitPrice > 0 ? (quantity * unitPrice).toFixed(2) : ''}
+            placeholder="Quantity × Price"
             error={errors.amount?.message}
-            {...register('amount')}
-            hint={quantity > 0 && unitPrice > 0 ? 'Auto-calculated' : 'Or enter directly'}
+            hint="Auto-calculated from Quantity × Price"
+            className="bg-gray-50 text-gray-700 cursor-not-allowed"
           />
         </div>
+        {isCuttingCategory && (
+          <div>
+            <span className="block text-sm font-medium text-gray-700 mb-1">Condition</span>
+            <div className="flex gap-4">
+              <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="radio"
+                  name="cuttingState"
+                  checked={cuttingState === 'packed'}
+                  onChange={() => setCuttingState('packed')}
+                  className="text-primary-600 focus:ring-primary-500"
+                />
+                Already packed
+              </label>
+              <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="radio"
+                  name="cuttingState"
+                  checked={cuttingState === 'bare'}
+                  onChange={() => setCuttingState('bare')}
+                  className="text-primary-600 focus:ring-primary-500"
+                />
+                Bare / needs packing
+              </label>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              {cuttingState === 'packed'
+                ? 'Adds to Ready for Sale — sellable right away.'
+                : 'Adds to Needs Packing — pack it in Inventory before it can be sold.'}
+            </p>
+          </div>
+        )}
         <CheckboxField
           label="We resell this"
           checked={isResell}
@@ -980,6 +1124,29 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         error={errors.paymentMethod?.message}
         {...register('paymentMethod')}
       />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <CreatableSelect
+          label="Accounting Classification"
+          value={accountingClassification}
+          options={acOptions}
+          onChange={(v) => setValue('accountingClassification', v)}
+          onCreate={(v) => { addAccountingClassification(v); setValue('accountingClassification', v); }}
+          placeholder="Optional — e.g. Operating Expense (OpEx)"
+          createLabel="Add new classification…"
+          newFieldLabel="New accounting classification"
+        />
+        <CreatableSelect
+          label="Expense Type"
+          value={expenseType}
+          options={expenseTypeOptions}
+          onChange={(v) => setValue('expenseType', v)}
+          onCreate={(v) => { addExpenseType(v); setValue('expenseType', v); }}
+          placeholder="Optional — e.g. Fixed"
+          createLabel="Add new expense type…"
+          newFieldLabel="New expense type"
+        />
+      </div>
 
       <InputField label="Description" {...register('description')} placeholder={descriptionHint} />
       <CheckboxField label="Paid" checked={isPaid} onChange={setIsPaid} />

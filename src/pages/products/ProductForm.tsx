@@ -180,7 +180,7 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
 
       {/* Live margin preview */}
       {sellPHP > 0 && (
-        <div className="grid grid-cols-2 gap-4 p-3 bg-green-50 rounded-lg border border-green-100">
+        <div className="grid grid-cols-2 gap-4 p-3 bg-primary-50 rounded-lg border border-primary-100">
           <DisplayField label="Margin (auto = Sell − Cost)" value={formatPHP(marginPHP)} highlight />
           <DisplayField label="Margin % (auto)" value={`${marginPct.toFixed(1)}%`} highlight />
         </div>

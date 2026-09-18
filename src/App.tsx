@@ -34,7 +34,7 @@ export default function App() {
         toastOptions={{
           duration: 3000,
           style: { fontSize: '14px', borderRadius: '10px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' },
-          success: { iconTheme: { primary: '#16a34a', secondary: '#fff' } },
+          success: { iconTheme: { primary: '#6b9835', secondary: '#fff' } },
         }}
       />
       <Layout>

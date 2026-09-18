@@ -25,12 +25,12 @@ interface DayCellProps {
 }
 
 function DayCell({ state, label, dateLabel, onClick, ariaLabel }: DayCellProps) {
-  const base = 'flex flex-col items-center justify-center w-11 h-12 rounded-lg border text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400';
+  const base = 'flex flex-col items-center justify-center w-11 h-12 rounded-lg border text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400';
   const style =
     state === 1
-      ? 'bg-green-600 border-green-600 text-white'
+      ? 'bg-leaf-600 border-leaf-600 text-white'
       : state === 0.5
-        ? 'bg-green-100 border-green-300 text-green-800'
+        ? 'bg-leaf-100 border-leaf-300 text-leaf-800'
         : 'bg-white border-gray-200 text-gray-400 hover:bg-gray-50';
   return (
     <button type="button" onClick={onClick} aria-label={ariaLabel} aria-pressed={state !== undefined} className={[base, style].join(' ')}>
@@ -70,7 +70,7 @@ export function TimesheetTab() {
             type="date"
             value={anchor}
             onChange={(e) => e.target.value && setAnchor(e.target.value)}
-            className="px-2 py-1 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="px-2 py-1 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
             aria-label="Pick a week"
           />
           <Button variant="ghost" size="xs" onClick={() => shiftWeek(1)}>Next<ChevronRight className="w-4 h-4" /></Button>
@@ -78,7 +78,7 @@ export function TimesheetTab() {
       }
     >
       <div className="flex items-center gap-2 text-sm text-gray-500 mb-4">
-        <CalendarDays className="w-4 h-4 text-green-600" />
+        <CalendarDays className="w-4 h-4 text-primary-600" />
         Week of {format(parseISO(start), 'MMM d')} – {format(parseISO(end), 'MMM d, yyyy')} (Mon–Sun)
       </div>
 

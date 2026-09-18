@@ -6,7 +6,11 @@ import {
 } from 'lucide-react';
 import { differenceInCalendarDays, parseISO } from 'date-fns';
 import toast from 'react-hot-toast';
+import {
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
+} from 'recharts';
 import { useCuttingStore, liveCuttingStatus } from '../../store/cuttingStore';
+import { useInventoryStore } from '../../store/inventoryStore';
 import { useNowTick } from '../../hooks/useNowTick';
 import type { CuttingBatch, CuttingStatus } from '../../types';
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -17,14 +21,21 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { StatCard } from '../../components/ui/StatCard';
 import { SectionCard } from '../../components/ui/SectionCard';
+import { CollapsibleSection } from '../../components/ui/CollapsibleSection';
 import { Badge } from '../../components/ui/Badge';
 import { RowActions } from '../../components/ui/RowActions';
 import { formatPHP, formatNumber, formatDate } from '../../utils/format';
 import { useListCrud } from '../../hooks/useListCrud';
 import {
   CUTTING_SOURCE_CUSTOMER, CUTTING_SOURCE_INTERNAL, CUTTING_STATUS_ROOTED_READY,
-  CUTTING_STATUS_PACKED, CUTTING_ALLOCATION_REPLANT,
+  CUTTING_STATUS_PACKED, CUTTING_ALLOCATION_REPLANT, CUTTINGS_PRODUCT_TYPE,
 } from '../../constants';
+import { PIE_COLORS } from '../../constants/chartColors';
+import {
+  TOOLTIP_CONTENT_STYLE, TOOLTIP_LABEL_STYLE, TOOLTIP_ITEM_STYLE,
+  LEGEND_STYLE, LEGEND_ICON_SIZE,
+  PIE_OUTER_RADIUS, PIE_INNER_RADIUS, PIE_CENTER_Y, renderPieValueLabel,
+} from '../../constants/chartTheme';
 import { CuttingForm } from './CuttingForm';
 
 /** Map a lifecycle status to a Badge variant. */
@@ -79,8 +90,12 @@ export function CuttingsPage() {
   // derived from this subscribed array rather than from get()-based store methods
   // so they can never read a stale snapshot.
   const storedBatches = useCuttingStore((s) => s.batches);
+  // Inventory is the source of truth for what's actually Ready for Sale — it
+  // includes farm-packed batches AND cuttings bought already-packed via Expenses.
+  const inventoryItems = useInventoryStore((s) => s.items);
   const deleteBatch = useCuttingStore((s) => s.deleteBatch);
   const allocateBatch = useCuttingStore((s) => s.allocateBatch);
+  const updateBatch = useCuttingStore((s) => s.updateBatch);
   const markPacked = useCuttingStore((s) => s.markPacked);
   const unmarkPacked = useCuttingStore((s) => s.unmarkPacked);
   const markPlanted = useCuttingStore((s) => s.markPlanted);
@@ -145,18 +160,19 @@ export function CuttingsPage() {
   // Recompute derived rollups whenever batches change.
   const cost = useMemo(() => batches.reduce((sum, b) => sum + b.totalCost, 0), [batches]);
   const sourced = useMemo(() => batches.reduce((sum, b) => sum + b.quantitySourced, 0), [batches]);
-  const available = useMemo(
+  // "Ready for Sale" = the packed-and-undelivered cutting stock across ALL
+  // sources, read from inventory's availableForSale pool (farm-packed batches +
+  // cuttings bought already-packed via Expenses). This is what's truly sellable,
+  // vs. `readyToRoot` below which only counts rooted batches in the Cuttings store.
+  const readyForSale = useMemo(
     () =>
-      batches
-        .filter(
-          (b) =>
-            b.status === 'Ready' ||
-            b.status === CUTTING_STATUS_ROOTED_READY ||
-            b.status === CUTTING_STATUS_PACKED,
-        )
-        .reduce((sum, b) => sum + b.quantityAvailable, 0),
-    [batches],
+      inventoryItems
+        .filter((i) => i.category === CUTTINGS_PRODUCT_TYPE)
+        .reduce((sum, i) => sum + (i.availableForSale ?? 0), 0),
+    [inventoryItems],
   );
+  // Batches that have finished rooting and still have stock — used for the
+  // "Ready to Sell" banner (rooted/packed with available quantity).
   const ready = useMemo(
     () =>
       batches.filter(
@@ -168,20 +184,34 @@ export function CuttingsPage() {
       ),
     [batches],
   );
-  // Rooted-ready internal batches still awaiting the staff "Mark as Packed" action.
-  const rootedReady = useMemo(
-    () => batches.filter((b) => b.status === CUTTING_STATUS_ROOTED_READY && b.quantityAvailable > 0),
+  // ── Stage batch counts (match the table's live status 1:1, no qty filter) ──
+  // Callusing (In Nursery), Rooting, and Rooted & Ready to Pack. These count
+  // every batch in that live status so the KPI equals the visible rows.
+  const callusing = useMemo(
+    () => batches.filter((b) => b.status === 'In Nursery / Callusing'),
     [batches],
   );
-  // The ⏳ Rooting KPI counts ONLY batches whose active status is strictly
-  // "Rooting". Callusing (In Nursery / Callusing) and Sourced are deliberately
-  // excluded — they are not yet in the rooting phase.
   const rooting = useMemo(
-    () => batches.filter((b) => b.status === 'Rooting' && b.quantityAvailable > 0),
+    () => batches.filter((b) => b.status === 'Rooting'),
+    [batches],
+  );
+  const rootedReady = useMemo(
+    () => batches.filter((b) => b.status === CUTTING_STATUS_ROOTED_READY),
     [batches],
   );
 
   const avgCostPerCutting = sourced > 0 ? cost / sourced : 0;
+
+  /** Batch counts per live lifecycle status, for the pipeline donut. */
+  const pipelineByStatus = useMemo(() => {
+    const byStatus = new Map<string, number>();
+    for (const b of batches) {
+      byStatus.set(b.status, (byStatus.get(b.status) ?? 0) + 1);
+    }
+    return Array.from(byStatus.entries())
+      .map(([name, value]) => ({ name, value }))
+      .filter((d) => d.value > 0);
+  }, [batches]);
 
   const columns: Column<CuttingBatch>[] = [
     {
@@ -229,16 +259,16 @@ export function CuttingsPage() {
         if (b.planted) {
           return (
             <div className="flex flex-col items-start gap-1">
-              <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-leaf-700">
                 <Sprout className="w-3.5 h-3.5" /> Planted · in field
               </span>
-              <Link to="/wholesale-forecast" className="text-xs text-gray-400 hover:text-green-700 hover:underline">
+              <Link to="/wholesale-forecast" className="text-xs text-gray-400 hover:text-primary-700 hover:underline">
                 deployed {b.deploymentDate ? formatDate(b.deploymentDate) : '—'} · view forecast
               </Link>
               <button
                 type="button"
                 onClick={() => handleUndoPlanted(b.id)}
-                className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-emerald-700 hover:bg-emerald-50 rounded px-1.5 py-0.5 transition-colors"
+                className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-leaf-700 hover:bg-leaf-50 rounded px-1.5 py-0.5 transition-colors"
                 title="Revert to Rooted & Ready to Pack and remove it from the wholesale forecast"
               >
                 <Undo2 className="w-3 h-3" /> Undo Planted
@@ -252,19 +282,19 @@ export function CuttingsPage() {
         if (b.status === CUTTING_STATUS_PACKED) {
           return (
             <div className="flex flex-col items-start gap-1">
-              <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700">
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-primary-700">
                 <PackageCheck className="w-3.5 h-3.5" /> Packed · in stock for sale
               </span>
               <Link
                 to={`/inventory?highlight=${encodeURIComponent(b.subcategory)}`}
-                className="text-xs text-gray-400 hover:text-blue-700 hover:underline"
+                className="text-xs text-gray-400 hover:text-primary-700 hover:underline"
               >
-                {formatNumber(b.quantityAvailable, 0)} in Available Stock for Sale · view inventory
+                {formatNumber(b.quantityAvailable, 0)} Ready for Sale · view inventory
               </Link>
               <button
                 type="button"
                 onClick={() => handleUndoPacked(b.id)}
-                className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-blue-700 hover:bg-blue-50 rounded px-1.5 py-0.5 transition-colors"
+                className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-primary-700 hover:bg-primary-50 rounded px-1.5 py-0.5 transition-colors"
                 title="Revert to Rooted & Ready to Pack and remove the stock from inventory"
               >
                 <Undo2 className="w-3 h-3" /> Undo Packed
@@ -280,12 +310,12 @@ export function CuttingsPage() {
           if (b.allocation === CUTTING_ALLOCATION_REPLANT) {
             return (
               <div className="flex flex-col items-start gap-1">
-                <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700">
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-berry-700">
                   <Sprout className="w-3.5 h-3.5" /> Reserved for farm
                 </span>
                 <Link
                   to={`/inventory?highlight=${encodeURIComponent(b.subcategory)}`}
-                  className="text-xs text-gray-400 hover:text-purple-700 hover:underline"
+                  className="text-xs text-gray-400 hover:text-berry-700 hover:underline"
                 >
                   {formatNumber(b.quantityAvailable, 0)} in Our Farm Breeding Stock · view inventory
                 </Link>
@@ -301,7 +331,7 @@ export function CuttingsPage() {
                   <button
                     type="button"
                     onClick={() => handleUnreserve(b.id)}
-                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-purple-700 hover:bg-purple-50 rounded px-1.5 py-0.5 transition-colors"
+                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-berry-700 hover:bg-berry-50 rounded px-1.5 py-0.5 transition-colors"
                     title="Clear the reservation and return the stock from Breeding Stock"
                   >
                     <Undo2 className="w-3 h-3" /> Undo Reserve
@@ -346,7 +376,10 @@ export function CuttingsPage() {
         const d = b.readyDate || b.estimatedReadyDate;
         return d ? formatDate(d) : '—';
       },
-      sortValue: (b) => b.readyDate || b.estimatedReadyDate,
+      // Sort by ready date ascending (closest to today first). Batches with no
+      // ready date yet ("not grafted") sort to the END via a high sentinel, so
+      // dated batches always lead.
+      sortValue: (b) => b.readyDate || b.estimatedReadyDate || '9999-12-31',
     },
     {
       key: 'quantitySourced',
@@ -358,7 +391,7 @@ export function CuttingsPage() {
       key: 'quantityAvailable',
       header: 'Available',
       accessor: (b) => (
-        <span className={b.quantityAvailable > 0 ? 'font-semibold text-green-700' : 'text-gray-400'}>
+        <span className={b.quantityAvailable > 0 ? 'font-semibold text-leaf-700' : 'text-gray-400'}>
           {formatNumber(b.quantityAvailable, 0)}
         </span>
       ),
@@ -376,6 +409,15 @@ export function CuttingsPage() {
       accessor: (b) => formatPHP(b.totalCost),
       sortValue: (b) => b.totalCost,
     },
+    {
+      key: 'notes',
+      header: 'Notes',
+      accessor: (b) => b.notes?.trim()
+        ? <span className="text-gray-600">{b.notes}</span>
+        : <span className="text-gray-300">—</span>,
+      sortValue: (b) => b.notes ?? '',
+      editable: { type: 'text', getValue: (b) => b.notes ?? '' },
+    },
   ];
 
   return (
@@ -390,8 +432,8 @@ export function CuttingsPage() {
       <SectionCard>
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-start gap-3">
-            <div className="p-2 rounded-lg bg-green-50 flex-shrink-0">
-              <ShoppingCart className="w-5 h-5 text-green-600" />
+            <div className="p-2 rounded-lg bg-primary-50 flex-shrink-0">
+              <ShoppingCart className="w-5 h-5 text-primary-600" />
             </div>
             <div>
               <p className="text-sm font-medium text-gray-800">Selling cuttings? Record it in Sales.</p>
@@ -411,12 +453,55 @@ export function CuttingsPage() {
       </SectionCard>
 
       {/* ── KPIs ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      {/* Money + volume totals. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <StatCard title="Total Cost" value={formatPHP(cost)} subtitle="Sourcing + grafting" icon={DollarSign} iconColor="text-red-500" iconBg="bg-red-50" />
-        <StatCard title="Total Sourced" value={formatNumber(sourced, 0)} subtitle={avgCostPerCutting > 0 ? `${formatPHP(avgCostPerCutting)} avg / cutting` : 'cuttings'} icon={Sprout} iconColor="text-teal-600" iconBg="bg-teal-50" />
-        <StatCard title="Ready to Sell" value={formatNumber(available, 0)} subtitle={`${ready.length} batch(es) rooted`} icon={CheckCircle2} iconColor="text-emerald-600" iconBg="bg-emerald-50" />
-        <StatCard title="Rooting" value={formatNumber(rooting.length, 0)} subtitle="Batches maturing" icon={Clock} iconColor="text-yellow-600" iconBg="bg-yellow-50" />
+        <StatCard title="Total Sourced" value={formatNumber(sourced, 0)} subtitle={avgCostPerCutting > 0 ? `${formatPHP(avgCostPerCutting)} avg / cutting` : 'cuttings'} icon={Sprout} iconColor="text-primary-600" iconBg="bg-primary-50" />
       </div>
+      {/* Lifecycle stages. Callusing → Rooting → Rooted & Ready to Pack are batch
+          counts (matching the table's live status 1:1); Packed & Ready to Sell is
+          the sellable piece quantity from inventory (farm + purchased). */}
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        <StatCard title="Callusing" value={formatNumber(callusing.length, 0)} subtitle="In nursery, healing" icon={Sprout} iconColor="text-primary-600" iconBg="bg-primary-50" />
+        <StatCard title="Rooting" value={formatNumber(rooting.length, 0)} subtitle="Batches maturing" icon={Clock} iconColor="text-berry-600" iconBg="bg-berry-50" />
+        <StatCard title="Rooted & Ready to Pack" value={formatNumber(rootedReady.length, 0)} subtitle="Pack or reserve for replant" icon={PackageCheck} iconColor="text-gold-600" iconBg="bg-gold-50" />
+        <StatCard title="Packed & Ready to Sell" value={formatNumber(readyForSale, 0)} subtitle="Packed pieces — farm + purchased" icon={CheckCircle2} iconColor="text-leaf-600" iconBg="bg-leaf-50" />
+      </div>
+
+      {/* ── Pipeline by status chart ── */}
+      {batches.length > 0 && pipelineByStatus.length > 0 && (
+        <CollapsibleSection title="Analytics" subtitle="Charts" storageKey="cuttings.analytics.collapsed">
+        <SectionCard title="Cutting Pipeline by Status" subtitle="How many batches sit at each lifecycle stage">
+          <ResponsiveContainer width="100%" height={260}>
+            <PieChart>
+              <Pie
+                data={pipelineByStatus}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy={PIE_CENTER_Y}
+                innerRadius={PIE_INNER_RADIUS}
+                outerRadius={PIE_OUTER_RADIUS}
+                paddingAngle={1}
+                label={renderPieValueLabel}
+                labelLine={false}
+              >
+                {pipelineByStatus.map((_, i) => (
+                  <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip
+                formatter={(v) => `${Number(v)} batches`}
+                contentStyle={TOOLTIP_CONTENT_STYLE}
+                labelStyle={TOOLTIP_LABEL_STYLE}
+                itemStyle={TOOLTIP_ITEM_STYLE}
+              />
+              <Legend iconSize={LEGEND_ICON_SIZE} wrapperStyle={LEGEND_STYLE} />
+            </PieChart>
+          </ResponsiveContainer>
+        </SectionCard>
+        </CollapsibleSection>
+      )}
 
       {/* ── Rooted & ready — needs allocation banner ── */}
       {rootedReady.length > 0 && (
@@ -430,9 +515,9 @@ export function CuttingsPage() {
               return (
                 <div
                   key={b.id}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${reserved ? 'bg-purple-50 border-purple-300' : 'bg-green-50 border-green-300'}`}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${reserved ? 'bg-berry-50 border-berry-300' : 'bg-leaf-50 border-leaf-300'}`}
                 >
-                  <span className={`text-sm font-medium ${reserved ? 'text-purple-800' : 'text-green-800'}`}>{b.subcategory}</span>
+                  <span className={`text-sm font-medium ${reserved ? 'text-berry-800' : 'text-leaf-800'}`}>{b.subcategory}</span>
                   <Badge label={`${formatNumber(b.quantityAvailable, 0)} ${reserved ? 'reserved' : 'ready'}`} variant={reserved ? 'purple' : 'green'} />
                   {reserved ? (
                     <Button size="xs" variant="outline" icon={<Sprout className="w-3.5 h-3.5" />} onClick={() => handleMarkPlanted(b.id)}>
@@ -460,8 +545,8 @@ export function CuttingsPage() {
         <SectionCard title="✅ Ready to Sell" subtitle="These batches have finished rooting and have stock available — sell them in the Sales page">
           <div className="flex flex-wrap gap-2">
             {ready.map((b) => (
-              <div key={b.id} className="flex items-center gap-2 px-3 py-1.5 bg-green-50 border border-green-200 rounded-lg">
-                <span className="text-sm font-medium text-green-800">{b.subcategory}</span>
+              <div key={b.id} className="flex items-center gap-2 px-3 py-1.5 bg-leaf-50 border border-leaf-200 rounded-lg">
+                <span className="text-sm font-medium text-leaf-800">{b.subcategory}</span>
                 <Badge label={`${formatNumber(b.quantityAvailable, 0)} available`} variant="green" />
               </div>
             ))}
@@ -474,8 +559,8 @@ export function CuttingsPage() {
         <SectionCard title="⏳ Rooting" subtitle="Grafted cuttings actively rooting toward their estimated ready date">
           <div className="flex flex-wrap gap-2">
             {rooting.map((b) => (
-              <div key={b.id} className="flex items-center gap-2 px-3 py-1.5 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <span className="text-sm font-medium text-yellow-800">{b.subcategory}</span>
+              <div key={b.id} className="flex items-center gap-2 px-3 py-1.5 bg-gold-50 border border-gold-200 rounded-lg">
+                <span className="text-sm font-medium text-gold-800">{b.subcategory}</span>
                 <Badge label={readinessLabel(b)} variant="yellow" />
               </div>
             ))}
@@ -506,10 +591,16 @@ export function CuttingsPage() {
           // green so they instantly catch the eye for the next staff action.
           rowClassName={(b) =>
             b.status === CUTTING_STATUS_ROOTED_READY && !b.planted
-              ? 'bg-green-50 hover:bg-green-100'
+              ? 'bg-primary-50 hover:bg-primary-100'
               : ''
           }
           actions={(b) => <RowActions onEdit={() => crud.openEdit(b)} onDelete={() => crud.requestDelete(b)} />}
+          // Notes edit inline; updateBatch only recomputes derived fields, so a
+          // notes-only patch has no cascade.
+          onCellEdit={(b, key, value) => updateBatch(b.id, { [key]: value })}
+          // Default: soonest ready date first (closest to today at the top).
+          defaultSort={{ key: 'readyDate', dir: 'asc' }}
+          getRecency={(b) => b.createdAt}
         />
       )}
 

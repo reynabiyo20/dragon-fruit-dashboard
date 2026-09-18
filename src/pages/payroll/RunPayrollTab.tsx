@@ -153,7 +153,7 @@ export function RunPayrollTab({ onDone }: RunPayrollTabProps) {
             type="date"
             value={anchor}
             onChange={(e) => { if (e.target.value) { setAnchor(e.target.value); setDrafts(null); } }}
-            className="px-2 py-1 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="px-2 py-1 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
             aria-label="Pick a week"
           />
           <Button variant="ghost" size="xs" onClick={() => shiftWeek(1)}>Next<ChevronRight className="w-4 h-4" /></Button>
@@ -171,14 +171,14 @@ export function RunPayrollTab({ onDone }: RunPayrollTabProps) {
           {/* Employee multiselect */}
           <div className="rounded-lg border border-gray-200 divide-y divide-gray-100">
             <label className="flex items-center gap-2 px-3 py-2 cursor-pointer bg-gray-50">
-              <input type="checkbox" checked={allSelected} onChange={toggleAll} className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500" />
+              <input type="checkbox" checked={allSelected} onChange={toggleAll} className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500" />
               <span className="text-sm font-medium text-gray-700">Select all ({employees.length})</span>
             </label>
             {employees.map((emp) => {
               const days = sumWorkedDays(getWorkedDays(start, emp.id));
               return (
                 <label key={emp.id} className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50">
-                  <input type="checkbox" checked={selected.has(emp.id)} onChange={() => toggle(emp.id)} className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500" />
+                  <input type="checkbox" checked={selected.has(emp.id)} onChange={() => toggle(emp.id)} className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500" />
                   <span className="flex-1 text-sm text-gray-700">{emp.name} <span className="text-gray-400">· {emp.position}</span></span>
                   <span className="text-xs text-gray-400">{days} day{days !== 1 ? 's' : ''} on timesheet</span>
                 </label>
@@ -209,7 +209,7 @@ export function RunPayrollTab({ onDone }: RunPayrollTabProps) {
                   <div className="col-span-12 sm:col-span-3 min-w-0">
                     <span className="text-sm text-gray-700 truncate block">{d.employeeName}</span>
                     {d.alreadyExists && (
-                      <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+                      <span className="inline-flex items-center gap-1 text-xs text-gold-600">
                         <AlertTriangle className="w-3 h-3" /> already has an entry — will skip
                       </span>
                     )}
@@ -217,17 +217,17 @@ export function RunPayrollTab({ onDone }: RunPayrollTabProps) {
                   <span className="col-span-3 sm:col-span-1 text-sm text-gray-700">{d.daysWorked}</span>
                   <input type="number" step="0.01" aria-label={`Rate for ${d.employeeName}`} value={d.rate}
                     onChange={(e) => patchDraft(d.employeeId, { rate: Number(e.target.value) || 0 })}
-                    className="col-span-3 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" />
+                    className="col-span-3 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
                   <input type="number" step="0.01" aria-label={`Commission for ${d.employeeName}`} value={d.commissionAmount}
                     onChange={(e) => patchDraft(d.employeeId, { commissionAmount: Number(e.target.value) || 0 })}
-                    className="col-span-3 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" />
+                    className="col-span-3 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
                   <input type="number" step="0.01" aria-label={`Bonus for ${d.employeeName}`} value={d.bonus}
                     onChange={(e) => patchDraft(d.employeeId, { bonus: Number(e.target.value) || 0 })}
-                    className="col-span-3 sm:col-span-1 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" />
+                    className="col-span-3 sm:col-span-1 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
                   <input type="number" step="0.01" aria-label={`Deductions for ${d.employeeName}`} value={d.deductions}
                     onChange={(e) => patchDraft(d.employeeId, { deductions: Number(e.target.value) || 0 })}
-                    className="col-span-3 sm:col-span-1 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" />
-                  <span className={`col-span-6 sm:col-span-2 text-sm text-right font-semibold ${d.alreadyExists ? 'text-gray-300 line-through' : 'text-green-700'}`}>
+                    className="col-span-3 sm:col-span-1 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
+                  <span className={`col-span-6 sm:col-span-2 text-sm text-right font-semibold ${d.alreadyExists ? 'text-gray-300 line-through' : 'text-leaf-700'}`}>
                     {formatPHP(net)}
                   </span>
                 </div>

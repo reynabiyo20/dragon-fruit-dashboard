@@ -96,7 +96,11 @@ export function CreatableSelect({
         <label className="text-sm font-medium text-gray-700">
           {newFieldLabel}{required && <span className="text-red-500 ml-0.5">*</span>}
         </label>
-        <div className="flex items-center gap-2 min-w-0">
+        {/* Input takes a full-width row; the confirm/cancel buttons sit on their
+            own row so they never overflow into a neighbouring grid cell (which
+            caused the Unit control to overlap the Price field in the itemized
+            expense picker's narrow two-column layout). */}
+        <div className="flex flex-col gap-2 min-w-0">
           {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
           <input
             autoFocus
@@ -106,14 +110,14 @@ export function CreatableSelect({
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); confirmCreate(); } }}
             placeholder={newFieldPlaceholder}
             className={[
-              // min-w-0 lets the input shrink inside narrow grid cells so the
-              // confirm/cancel buttons don't overflow and overlap neighbours.
-              'flex-1 min-w-0 px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500',
+              'w-full min-w-0 px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500',
               localError ? 'border-red-400 bg-red-50' : 'border-gray-300',
             ].join(' ')}
           />
-          <Button type="button" variant="primary" size="sm" className="shrink-0 px-2" icon={<Check className="w-4 h-4" />} onClick={confirmCreate} aria-label="Confirm" />
-          <Button type="button" variant="outline" size="sm" className="shrink-0 px-2" icon={<X className="w-4 h-4" />} onClick={cancelCreate} aria-label="Cancel" />
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="primary" size="sm" className="shrink-0 px-2" icon={<Check className="w-4 h-4" />} onClick={confirmCreate} aria-label="Confirm">Add</Button>
+            <Button type="button" variant="outline" size="sm" className="shrink-0 px-2" icon={<X className="w-4 h-4" />} onClick={cancelCreate} aria-label="Cancel">Cancel</Button>
+          </div>
         </div>
         {/* Similar-entry suggestions + exact-duplicate notice for the typed value. */}
         <SimilarEntryHint

@@ -1,5 +1,8 @@
 import { createOptionListStore } from './optionListStore';
-import { SALE_TYPES, INVENTORY_CATEGORIES, UNIT_VALUES, EMPLOYEE_TYPES, EMPLOYEE_POSITIONS, DRAGON_FRUIT_VARIETIES } from '../constants';
+import {
+  SALE_TYPES, INVENTORY_CATEGORIES, UNIT_VALUES, EMPLOYEE_TYPES, EMPLOYEE_POSITIONS,
+  DRAGON_FRUIT_VARIETIES, ACCOUNTING_CLASSIFICATIONS, EXPENSE_TYPES,
+} from '../constants';
 import { useSaleStore } from './saleStore';
 import { useProductStore } from './productStore';
 import { useInventoryStore } from './inventoryStore';
@@ -94,6 +97,30 @@ export const useEmployeePositionStore = createOptionListStore(
   (from, to) => {
     const { employees, updateEmployee } = useEmployeeStore.getState();
     employees.filter((e) => sameOption(e.position, from)).forEach((e) => updateEmployee(e.id, { position: to }));
+  },
+);
+
+/** Rename cascade: expenses store their accounting classification. */
+export const useAccountingClassificationStore = createOptionListStore(
+  'dfd-accounting-classifications',
+  ACCOUNTING_CLASSIFICATIONS,
+  (from, to) => {
+    const { expenses, updateExpense } = useExpenseStore.getState();
+    expenses
+      .filter((e) => sameOption(e.accountingClassification ?? '', from))
+      .forEach((e) => updateExpense(e.id, { accountingClassification: to }));
+  },
+);
+
+/** Rename cascade: expenses store their expense type (cost behavior). */
+export const useExpenseTypeStore = createOptionListStore(
+  'dfd-expense-types',
+  EXPENSE_TYPES,
+  (from, to) => {
+    const { expenses, updateExpense } = useExpenseStore.getState();
+    expenses
+      .filter((e) => sameOption(e.expenseType ?? '', from))
+      .forEach((e) => updateExpense(e.id, { expenseType: to }));
   },
 );
 

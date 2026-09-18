@@ -1,5 +1,8 @@
 import { useMemo } from 'react';
 import { Plus, TreePine, Sprout } from 'lucide-react';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from 'recharts';
 import { useFarmStore } from '../../store/farmStore';
 import { useProductionStore } from '../../store/productionStore';
 import type { FarmSection } from '../../types';
@@ -11,9 +14,15 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { StatCard } from '../../components/ui/StatCard';
 import { SectionCard } from '../../components/ui/SectionCard';
+import { CollapsibleSection } from '../../components/ui/CollapsibleSection';
 import { RowActions } from '../../components/ui/RowActions';
 import { formatNumber } from '../../utils/format';
 import { useListCrud } from '../../hooks/useListCrud';
+import { BRAND } from '../../constants/chartColors';
+import {
+  AXIS_TICK, AXIS_LINE, GRID_STROKE,
+  TOOLTIP_CONTENT_STYLE, TOOLTIP_LABEL_STYLE, TOOLTIP_ITEM_STYLE,
+} from '../../constants/chartTheme';
 import { FarmForm } from './FarmForm';
 
 export function FarmPage() {
@@ -35,6 +44,18 @@ export function FarmPage() {
   const expectedHarvest = (capacity: number) =>
     overallYieldRate > 0 ? capacity * overallYieldRate : null;
 
+  /** Plant capacity per section, descending, for the bar chart. */
+  const capacityBySection = useMemo(() =>
+    sections
+      .map((s) => ({
+        name: s.plantSubcategory ? `${s.sectionType} · ${s.plantSubcategory}` : s.sectionType,
+        value: s.currentPlantCapacity,
+      }))
+      .filter((d) => d.value > 0)
+      .sort((a, b) => b.value - a.value),
+    [sections]
+  );
+
   const columns: Column<FarmSection>[] = [
     {
       key: 'sectionType',
@@ -52,7 +73,7 @@ export function FarmPage() {
       key: 'currentPlantCapacity',
       header: 'Plant Capacity',
       accessor: (s) => (
-        <span className="font-semibold text-green-700">
+        <span className="font-semibold text-primary-700">
           {s.currentPlantCapacity > 0 ? formatNumber(s.currentPlantCapacity, 0) : <span className="text-gray-400 font-normal">TBD</span>}
         </span>
       ),
@@ -64,7 +85,7 @@ export function FarmPage() {
       accessor: (s) => {
         const d = plantDensity(s.id);
         return d > 0
-          ? <span className="text-blue-700 font-medium">{d.toFixed(2)} /sqm</span>
+          ? <span className="text-primary-700 font-medium">{d.toFixed(2)} /sqm</span>
           : <span className="text-gray-400">—</span>;
       },
       sortValue: (s) => plantDensity(s.id),
@@ -75,7 +96,7 @@ export function FarmPage() {
       accessor: (s) => {
         const est = expectedHarvest(s.currentPlantCapacity);
         return est !== null
-          ? <span className="text-purple-700 font-medium">{formatNumber(est, 0)} fruits</span>
+          ? <span className="text-berry-700 font-medium">{formatNumber(est, 0)} fruits</span>
           : <span className="text-gray-400 text-xs">Log harvests to estimate</span>;
       },
       sortValue: (s) => expectedHarvest(s.currentPlantCapacity) ?? 0,
@@ -95,18 +116,41 @@ export function FarmPage() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <StatCard title="Total Sections"       value={sections.length}                              icon={TreePine} iconColor="text-green-600"  iconBg="bg-green-50" />
-        <StatCard title="Total Area"           value={`${formatNumber(totalArea(), 0)} Sqm`}        icon={TreePine} iconColor="text-blue-600"   iconBg="bg-blue-50" />
-        <StatCard title="Total Plant Capacity" value={formatNumber(totalPlantCapacity(), 0)}        icon={Sprout}   iconColor="text-purple-600" iconBg="bg-purple-50" />
+        <StatCard title="Total Sections"       value={sections.length}                              icon={TreePine} iconColor="text-primary-600"  iconBg="bg-primary-50" />
+        <StatCard title="Total Area"           value={`${formatNumber(totalArea(), 0)} Sqm`}        icon={TreePine} iconColor="text-berry-600"   iconBg="bg-berry-50" />
+        <StatCard title="Total Plant Capacity" value={formatNumber(totalPlantCapacity(), 0)}        icon={Sprout}   iconColor="text-gold-600" iconBg="bg-gold-50" />
         <StatCard
           title="Overall Yield Rate"
           value={overallYieldRate > 0 ? `${overallYieldRate.toFixed(2)} fruits/plant` : 'No data yet'}
           subtitle="From production history"
           icon={Sprout}
-          iconColor="text-teal-600"
-          iconBg="bg-teal-50"
+          iconColor="text-leaf-600"
+          iconBg="bg-leaf-50"
         />
       </div>
+
+      {/* Plant capacity by section chart */}
+      {sections.length > 0 && capacityBySection.length > 0 && (
+        <CollapsibleSection title="Analytics" subtitle="Charts" storageKey="farm.analytics.collapsed">
+        <SectionCard title="Plant Capacity by Section" subtitle="Current plant capacity across farm sections">
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={capacityBySection} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+              <XAxis dataKey="name" tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} interval={0} angle={-15} textAnchor="end" height={60} />
+              <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={52} />
+              <Tooltip
+                formatter={(v) => `${formatNumber(Number(v), 0)} plants`}
+                cursor={{ fill: 'rgba(106, 58, 103, 0.06)' }}
+                contentStyle={TOOLTIP_CONTENT_STYLE}
+                labelStyle={TOOLTIP_LABEL_STYLE}
+                itemStyle={TOOLTIP_ITEM_STYLE}
+              />
+              <Bar dataKey="value" name="Plant Capacity" fill={BRAND.leaf} radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </SectionCard>
+        </CollapsibleSection>
+      )}
 
       {/* Section density + harvest estimate cards */}
       {sections.filter(s => s.currentPlantCapacity > 0).length > 0 && (
@@ -140,12 +184,12 @@ export function FarmPage() {
                     {density > 0 && (
                       <div className="flex justify-between">
                         <span className="text-gray-500">Density</span>
-                        <span className="font-medium text-blue-700">{density.toFixed(2)}/sqm</span>
+                        <span className="font-medium text-primary-700">{density.toFixed(2)}/sqm</span>
                       </div>
                     )}
                     <div className="flex justify-between pt-1 border-t border-gray-200 mt-1">
                       <span className="text-gray-500">Est. Harvest</span>
-                      <span className={`font-semibold ${est !== null ? 'text-purple-700' : 'text-gray-400'}`}>
+                      <span className={`font-semibold ${est !== null ? 'text-berry-700' : 'text-gray-400'}`}>
                         {est !== null ? `${formatNumber(est, 0)} fruits` : '—'}
                       </span>
                     </div>

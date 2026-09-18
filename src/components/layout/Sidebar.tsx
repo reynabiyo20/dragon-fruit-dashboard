@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, Link } from 'react-router-dom';
 import {
   LayoutDashboard, ShoppingCart, Receipt, Users, Truck,
   Package, Sprout, Banknote, UserCheck, Factory, TreePine,
@@ -6,6 +6,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { useState } from 'react';
+import logo from '../../assets/logo.jpg';
 
 interface NavItem {
   to: string;
@@ -27,9 +28,9 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/products',            label: 'Products',           icon: Package },
   { to: '/inventory',           label: 'Inventory',          icon: Sprout },
   { to: '/cuttings',            label: 'Cuttings',           icon: Scissors },
-  { to: '/wholesale-forecast',  label: 'Wholesale Forecast', icon: TrendingUp },
+  { to: '/wholesale-forecast',  label: 'Dragon Fruit Supply Forecast', icon: TrendingUp },
   { to: '/employees',           label: 'Employees',          icon: UserCheck },
-  { to: '/production',          label: 'Production',         icon: Factory },
+  { to: '/production',          label: 'Dragon Fruit Production', icon: Factory },
   { to: '/farm',                label: 'Farm Info',          icon: TreePine },
   { to: '/business',            label: 'Business Info',      icon: Settings },
   { to: '/settings',            label: 'Settings',           icon: SlidersHorizontal },
@@ -41,23 +42,30 @@ export function Sidebar() {
   return (
     <aside
       className={[
-        'relative flex flex-col bg-white border-r border-gray-200 h-screen sticky top-0',
+        'relative flex flex-col bg-primary-50/40 border-r border-primary-100 h-screen sticky top-0',
         'transition-all duration-200 ease-in-out',
         collapsed ? 'w-16' : 'w-60',
       ].join(' ')}
     >
-      {/* Logo */}
-      <div className="flex items-center gap-3 px-4 py-5 border-b border-gray-100 overflow-hidden flex-shrink-0">
-        <div className="w-8 h-8 rounded-lg bg-green-600 flex items-center justify-center flex-shrink-0">
-          <TreePine className="w-4 h-4 text-white" />
-        </div>
+      {/* Logo — links back to the Dashboard */}
+      <Link
+        to="/"
+        className="flex items-center gap-3 px-4 py-5 border-b border-primary-100 overflow-hidden flex-shrink-0 transition-colors hover:bg-primary-100/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-400"
+        aria-label="Go to Dashboard"
+        title={collapsed ? 'Dashboard' : undefined}
+      >
+        <img
+          src={logo}
+          alt="Bulacan Dragon Fruit Depot logo"
+          className="w-9 h-9 rounded-full object-cover flex-shrink-0 ring-1 ring-gold-300"
+        />
         {!collapsed && (
           <div className="truncate">
-            <p className="text-sm font-bold text-gray-900 leading-tight">Dragon Fruit</p>
-            <p className="text-xs text-gray-400 leading-tight">Depot</p>
+            <p className="text-sm font-bold text-primary-800 leading-tight">Bulacan Dragon Fruit</p>
+            <p className="text-xs text-gold-600 font-semibold leading-tight tracking-wide">DEPOT</p>
           </div>
         )}
-      </div>
+      </Link>
 
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto scrollbar-thin py-3 px-2">
@@ -70,8 +78,8 @@ export function Sidebar() {
               'flex items-center gap-3 px-3 py-2 rounded-xl mb-0.5 text-sm font-medium transition-colors',
               'group whitespace-nowrap overflow-hidden',
               isActive
-                ? 'bg-green-50 text-green-700'
-                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900',
+                ? 'bg-primary-700 text-white shadow-sm'
+                : 'text-primary-800/70 hover:bg-primary-100 hover:text-primary-900',
             ].join(' ')}
             title={collapsed ? label : undefined}
           >
@@ -82,10 +90,10 @@ export function Sidebar() {
       </nav>
 
       {/* Collapse toggle */}
-      <div className="border-t border-gray-100 px-2 py-3 flex-shrink-0">
+      <div className="border-t border-primary-100 px-2 py-3 flex-shrink-0">
         <button
           onClick={() => setCollapsed((c) => !c)}
-          className="flex items-center justify-center w-full px-3 py-2 rounded-xl text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+          className="flex items-center justify-center w-full px-3 py-2 rounded-xl text-primary-400 hover:bg-primary-100 hover:text-primary-700 transition-colors"
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}

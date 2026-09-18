@@ -18,6 +18,11 @@ import { INVENTORY_LINKED_TYPES } from '../../constants';
 /** Categories that always cascade into the sellable Products list. */
 const ALWAYS_RESELL_CATEGORIES = INVENTORY_LINKED_TYPES as readonly string[];
 
+/** The Cuttings category — its purchases route by packed/bare condition. */
+const CUTTINGS_CATEGORY = INVENTORY_LINKED_TYPES[0]; // 'Cuttings'
+const isCuttingCat = (category: string): boolean =>
+  category.trim().toLowerCase() === CUTTINGS_CATEGORY.toLowerCase();
+
 /**
  * Multi-item product picker for an itemized purchase from a single vendor.
  *
@@ -348,7 +353,7 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                         type="checkbox"
                         checked={isEntryChecked(e)}
                         onChange={() => toggleEntry(e)}
-                        className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
+                        className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
                       />
                       <span className="flex-1 truncate text-gray-700">
                         {e.name}
@@ -369,8 +374,8 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
 
             {/* Inline create-product form */}
             {showCreate && (
-              <div className="rounded-lg border border-green-100 bg-green-50 p-3 space-y-3">
-                <p className="text-xs font-medium text-green-700">
+              <div className="rounded-lg border border-primary-100 bg-primary-50 p-3 space-y-3">
+                <p className="text-xs font-medium text-primary-700">
                   New product — identified by category + subcategory, saved to the catalog and linked to {vendorName || 'this vendor'} at the price you set.
                 </p>
                 {/* Classification (identity): Category + Subcategory */}
@@ -500,18 +505,56 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                         Cuttings/Fruit/Fertilizer always resell, so the toggle is
                         shown as a locked-on note for those. */}
                     {ALWAYS_RESELL_CATEGORIES.includes(it.category) ? (
-                      <span className="mt-0.5 block text-xs text-green-600">Resold (always)</span>
+                      <span className="mt-0.5 block text-xs text-primary-600">Resold (always)</span>
                     ) : (
                       <label className="mt-0.5 flex items-center gap-1 text-xs text-gray-500 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={!!it.resell}
                           onChange={(e) => updateLine(i, { resell: e.target.checked })}
-                          className="w-3.5 h-3.5 text-green-600 border-gray-300 rounded focus:ring-green-500"
+                          className="w-3.5 h-3.5 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
                         />
                         We resell this
                       </label>
                     )}
+                    {/* Cuttings only: packed (Ready for Sale) vs bare (Needs
+                        Packing). Rendered as an obvious labeled segmented toggle
+                        (mirroring the single-expense form) so the condition
+                        isn't buried in a tiny dropdown. */}
+                    {isCuttingCat(it.category) && (() => {
+                      const condition = it.cuttingState ?? 'packed';
+                      return (
+                        <div className="mt-1.5">
+                          <span className="block text-xs font-medium text-gray-600 mb-1">Condition</span>
+                          <div className="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-50">
+                            {([
+                              { value: 'packed', label: 'Already packed' },
+                              { value: 'bare', label: 'Bare / needs packing' },
+                            ] as const).map((opt) => (
+                              <button
+                                key={opt.value}
+                                type="button"
+                                aria-pressed={condition === opt.value}
+                                onClick={() => updateLine(i, { cuttingState: opt.value })}
+                                className={[
+                                  'px-2.5 py-1 text-xs rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400',
+                                  condition === opt.value
+                                    ? 'bg-white text-gray-900 shadow-sm font-medium'
+                                    : 'text-gray-500 hover:text-gray-700',
+                                ].join(' ')}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                          <p className="text-xs text-gray-400 mt-1">
+                            {condition === 'packed'
+                              ? 'Adds to Ready for Sale — sellable right away.'
+                              : 'Adds to Needs Packing — pack it in Inventory before it can be sold.'}
+                          </p>
+                        </div>
+                      );
+                    })()}
                   </div>
                   <input
                     type="number"
@@ -519,13 +562,13 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                     aria-label={`Quantity for ${it.name}`}
                     value={it.quantity}
                     onChange={(e) => updateLine(i, { quantity: Number(e.target.value) })}
-                    className="col-span-4 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="col-span-4 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                   />
                   <select
                     aria-label={`Unit for ${it.name}`}
                     value={it.unit}
                     onChange={(e) => updateLine(i, { unit: e.target.value })}
-                    className="col-span-4 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="col-span-4 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-500"
                   >
                     <option value="">—</option>
                     {unitOptions.map((o) => (
@@ -538,7 +581,7 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                     aria-label={`Price for ${it.name}`}
                     value={it.unitPrice}
                     onChange={(e) => updateLine(i, { unitPrice: Number(e.target.value) })}
-                    className="col-span-3 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="col-span-3 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                   />
                   <span className="col-span-8 sm:col-span-1 text-sm text-right font-medium text-gray-800">
                     {formatPHP(it.total)}

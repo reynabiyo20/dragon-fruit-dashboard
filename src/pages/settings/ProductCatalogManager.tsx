@@ -161,7 +161,7 @@ export function ProductCatalogManager() {
                       type="button"
                       onClick={() => openEdit(p)}
                       aria-label={`Edit ${p.name}`}
-                      className="p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-green-400"
+                      className="p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-400"
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </button>
@@ -191,7 +191,7 @@ export function ProductCatalogManager() {
                           aria-label={`Price for ${p.name} from ${vendorName(l.vendorId)}`}
                           value={l.defaultPrice}
                           onChange={(e) => linkVendorPrice(l.vendorId, p.id, Number(e.target.value) || 0)}
-                          className="w-24 px-2 py-1 text-sm text-right border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                          className="w-24 px-2 py-1 text-sm text-right border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
                         />
                         <button
                           type="button"
@@ -235,7 +235,7 @@ export function ProductCatalogManager() {
                   <button
                     type="button"
                     onClick={() => startLink(p.id)}
-                    className="mt-2 inline-flex items-center gap-1 text-xs text-green-700 hover:text-green-800 focus:outline-none focus:ring-2 focus:ring-green-400 rounded"
+                    className="mt-2 inline-flex items-center gap-1 text-xs text-primary-700 hover:text-primary-800 focus:outline-none focus:ring-2 focus:ring-primary-400 rounded"
                   >
                     <Plus className="w-3.5 h-3.5" /> Add vendor price
                   </button>

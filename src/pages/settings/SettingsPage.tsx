@@ -25,6 +25,7 @@ import { useEmployeeStore } from '../../store/employeeStore';
 import { useVendorStore } from '../../store/vendorStore';
 import { useListCrud } from '../../hooks/useListCrud';
 import { ProductCatalogManager } from './ProductCatalogManager';
+import { BackupRestore } from './BackupRestore';
 import type { UseBoundStore, StoreApi } from 'zustand';
 
 /** A Zustand hook produced by createOptionListStore */
@@ -103,7 +104,7 @@ function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, co
               editing === v ? (
                 <span
                   key={v}
-                  className="inline-flex items-center gap-1 py-0.5 pl-1 pr-0.5 rounded-full bg-white border border-green-300"
+                  className="inline-flex items-center gap-1 py-0.5 pl-1 pr-0.5 rounded-full bg-white border border-primary-300"
                 >
                   {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
                   <input
@@ -123,7 +124,7 @@ function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, co
                     onClick={commitEdit}
                     aria-label="Save"
                     disabled={renameCollides}
-                    className="p-1 rounded-full text-green-600 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="p-1 rounded-full text-primary-600 hover:bg-primary-50 focus:outline-none focus:ring-2 focus:ring-primary-400 disabled:opacity-40 disabled:cursor-not-allowed"
                     title={renameCollides ? `"${editDraft.trim()}" already exists` : 'Save'}
                   >
                     <Check className="w-3.5 h-3.5" />
@@ -147,7 +148,7 @@ function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, co
                     type="button"
                     onClick={() => startEdit(v)}
                     aria-label={`Rename ${v}`}
-                    className="p-0.5 rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-green-400"
+                    className="p-0.5 rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-primary-400"
                   >
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
@@ -167,7 +168,7 @@ function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, co
 
         {/* Inline-rename collision notice */}
         {renameCollides && (
-          <p className="text-xs text-amber-600">"{editDraft.trim()}" already exists as a {noun} — pick a different name.</p>
+          <p className="text-xs text-gold-600">"{editDraft.trim()}" already exists as a {noun} — pick a different name.</p>
         )}
 
         <div>
@@ -391,7 +392,7 @@ function CategoryManager() {
                       onClick={() => openAddSubcategory(category)}
                       aria-label={`Add subcategory to ${category}`}
                       title="Add subcategory"
-                      className="p-1 rounded-md text-gray-400 hover:text-green-700 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-400"
+                      className="p-1 rounded-md text-gray-400 hover:text-primary-700 hover:bg-primary-50 focus:outline-none focus:ring-2 focus:ring-primary-400"
                     >
                       <Plus className="w-3.5 h-3.5" />
                     </button>
@@ -400,7 +401,7 @@ function CategoryManager() {
                       onClick={() => openRenameCategory(category)}
                       aria-label={`Rename category ${category}`}
                       title="Rename category"
-                      className="p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-green-400"
+                      className="p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-400"
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </button>
@@ -422,7 +423,7 @@ function CategoryManager() {
                     type="checkbox"
                     checked={quantifiable}
                     onChange={(e) => setQuantifiable(category, e.target.checked)}
-                    className="w-3.5 h-3.5 text-green-600 border-gray-300 rounded focus:ring-green-500"
+                    className="w-3.5 h-3.5 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
                   />
                   Quantifiable (qty × price)
                 </label>
@@ -434,14 +435,14 @@ function CategoryManager() {
                     {subs.map((e) => (
                       <span
                         key={e.id}
-                        className="inline-flex items-center gap-0.5 pl-2 pr-0.5 py-0.5 rounded-full text-xs bg-blue-50 text-blue-700"
+                        className="inline-flex items-center gap-0.5 pl-2 pr-0.5 py-0.5 rounded-full text-xs bg-primary-50 text-primary-700"
                       >
                         {e.subcategory}
                         <button
                           type="button"
                           onClick={() => openRenameSubcategory(e)}
                           aria-label={`Rename ${e.subcategory}`}
-                          className="p-0.5 rounded-full text-blue-400 hover:text-blue-700 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                          className="p-0.5 rounded-full text-primary-400 hover:text-primary-700 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-primary-400"
                         >
                           <Pencil className="w-3 h-3" />
                         </button>
@@ -449,7 +450,7 @@ function CategoryManager() {
                           type="button"
                           onClick={() => crud.requestDelete(e)}
                           aria-label={`Remove ${e.subcategory}`}
-                          className="p-0.5 rounded-full text-blue-400 hover:text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400"
+                          className="p-0.5 rounded-full text-primary-400 hover:text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400"
                         >
                           <X className="w-3 h-3" />
                         </button>
@@ -644,10 +645,10 @@ function ProductCategoryManager() {
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <span className="text-sm font-medium text-gray-800 truncate">{category}</span>
                   <div className="flex items-center gap-0.5 flex-shrink-0">
-                    <button type="button" onClick={() => openAddSubcategory(category)} aria-label={`Add subcategory to ${category}`} title="Add subcategory" className="p-1 rounded-md text-gray-400 hover:text-green-700 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-400">
+                    <button type="button" onClick={() => openAddSubcategory(category)} aria-label={`Add subcategory to ${category}`} title="Add subcategory" className="p-1 rounded-md text-gray-400 hover:text-primary-700 hover:bg-primary-50 focus:outline-none focus:ring-2 focus:ring-primary-400">
                       <Plus className="w-3.5 h-3.5" />
                     </button>
-                    <button type="button" onClick={() => openRenameCategory(category)} aria-label={`Rename category ${category}`} title="Rename category" className="p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-green-400">
+                    <button type="button" onClick={() => openRenameCategory(category)} aria-label={`Rename category ${category}`} title="Rename category" className="p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-400">
                       <Pencil className="w-3.5 h-3.5" />
                     </button>
                     {topLevel && (
@@ -662,12 +663,12 @@ function ProductCategoryManager() {
                 ) : (
                   <div className="flex flex-wrap gap-1.5">
                     {subs.map((e) => (
-                      <span key={e.id} className="inline-flex items-center gap-0.5 pl-2 pr-0.5 py-0.5 rounded-full text-xs bg-purple-50 text-purple-700">
+                      <span key={e.id} className="inline-flex items-center gap-0.5 pl-2 pr-0.5 py-0.5 rounded-full text-xs bg-berry-50 text-berry-700">
                         {e.subcategory}
-                        <button type="button" onClick={() => openRenameSubcategory(e)} aria-label={`Rename ${e.subcategory}`} className="p-0.5 rounded-full text-purple-400 hover:text-purple-700 hover:bg-purple-100 focus:outline-none focus:ring-2 focus:ring-purple-400">
+                        <button type="button" onClick={() => openRenameSubcategory(e)} aria-label={`Rename ${e.subcategory}`} className="p-0.5 rounded-full text-berry-400 hover:text-berry-700 hover:bg-berry-100 focus:outline-none focus:ring-2 focus:ring-berry-400">
                           <Pencil className="w-3 h-3" />
                         </button>
-                        <button type="button" onClick={() => crud.requestDelete(e)} aria-label={`Remove ${e.subcategory}`} className="p-0.5 rounded-full text-purple-400 hover:text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400">
+                        <button type="button" onClick={() => crud.requestDelete(e)} aria-label={`Remove ${e.subcategory}`} className="p-0.5 rounded-full text-berry-400 hover:text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400">
                           <X className="w-3 h-3" />
                         </button>
                       </span>
@@ -783,6 +784,8 @@ export function SettingsPage() {
         title="Settings"
         subtitle="Manage the option lists used across the app. Removing an entry doesn't change records that already use it."
       />
+
+      <BackupRestore />
 
       <div className="flex items-center gap-2 text-gray-500 text-sm">
         <Tag className="w-4 h-4" />

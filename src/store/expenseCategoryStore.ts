@@ -142,13 +142,17 @@ interface ExpenseCategoryState {
 }
 
 // Bump this to force existing users to receive the updated seed category list
-const SEED_VERSION = 4;
+// v6: full expense-category list synced from the bookkeeping sheet (Land Costs,
+// Crop Protection, Business Insurance, Financial Overhead, Storage & Logistics,
+// Equipment Costs, Professional Services, Root Stock, J&T, …)
+const SEED_VERSION = 6;
 
 /** Categories whose expenses are naturally per-unit (materials) */
 const QUANTIFIABLE_CATEGORIES = new Set([
   'Cuttings',
   'Fruit',
   'Fertilizer',
+  'Root Stock',
   'Construction Material',
   'Marketing Supplies',
   'Grafting Supplies',
@@ -166,22 +170,24 @@ function entry(category: string, subcategory: string, quantifiable?: boolean): E
   };
 }
 
-// Full list from Excel — Category + Detail pairs
+// Full list synced from the bookkeeping sheet's "Expense Categories" tab.
+// NOTE: Payroll is intentionally NOT an expense category — it lives in the
+// Payroll section and is already included separately in the Reports P&L.
+// "Fertilizers" in the sheet maps to the app's singular "Fertilizer" category,
+// and Cuttings/Fruit variety rows are kept for partner purchases so an expense
+// maps 1:1 to an inventory row (see the expense→inventory link).
 const SEED_ENTRIES: ExpenseCategoryEntry[] = [
   entry('Construction labor', ''),
   entry('Electricity', ''),
   entry('Water', ''),
-  // NOTE: Payroll intentionally NOT an expense category — it lives in the Payroll
-  // section and is already included separately in the Reports P&L calculation.
-  // Cuttings & Fruit purchases from partners — carry the dragon-fruit varieties
-  // so a purchase maps 1:1 to an inventory row (see expense→inventory link).
+  // Cuttings & Fruit purchases from partners — carry the dragon-fruit varieties.
   ...DRAGON_FRUIT_VARIETIES.map((v) => entry('Cuttings', v)),
   ...DRAGON_FRUIT_VARIETIES.map((v) => entry('Fruit', v)),
+  entry('Root Stock', 'base/ full'),
   entry('Meals', 'Employee Recreation'),
   entry('Meals', 'Guest Food'),
   entry('Gas', ''),
   entry('Air Fare', ''),
-  entry('Operational Transportation', ''),
   ...FERTILIZER_VARIETIES.map((v) => entry('Fertilizer', v)),
   entry('Construction Material', 'Roof'),
   entry('Construction Material', 'PVC'),
@@ -197,10 +203,22 @@ const SEED_ENTRIES: ExpenseCategoryEntry[] = [
   entry('Packaging Materials', 'Box'),
   entry('Packaging Materials', 'Bubble Wrap'),
   entry('Packaging Materials', 'Scotch Tape'),
-  entry('Packaging Materials', 'Sharpie'),
+  entry('Packaging Materials', 'Sharpee'),
   entry('Delivery', 'Lala Move'),
   entry('Delivery', 'LBC'),
-  entry('Delivery', 'Etc'),
+  entry('Delivery', 'J&T'),
+  entry('Land Costs', 'Cash Rent / Land Lease'),
+  entry('Land Costs', 'Property & Real Estate Taxes'),
+  entry('Crop Protection', 'Crop Insurance Premium'),
+  entry('Business Insurance', 'General Liability Insurance'),
+  entry('Tractor & Vehicle Costs', 'Vehicle Registration & Fees'),
+  entry('Financial Overhead', 'Interest (Farm Mortgage)'),
+  entry('Financial Overhead', 'Interest (Equipment Loans)'),
+  entry('Storage & Logistics', 'Grain Elevator / Warehouse'),
+  entry('Storage & Logistics', 'Freight & Trucking Hauling'),
+  entry('Equipment Costs', 'Machine Hire / Custom Work'),
+  entry('Professional Services', 'Accounting & Bookkeeping'),
+  entry('Professional Services', 'Agronomist / Soil Testing'),
   entry('Other', ''),
 ];
 

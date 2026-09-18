@@ -32,7 +32,8 @@ interface EmployeeState {
   countByType: () => Record<string, number>;
 }
 
-const SEED_VERSION = 2;
+// v3: synced to the bookkeeping sheet — added Kevin (Owner), aligned commissions
+const SEED_VERSION = 3;
 
 /** Build an employee row cleanly */
 function e(
@@ -58,15 +59,16 @@ function e(
 }
 
 const SEED_EMPLOYEES: Employee[] = [
+  // Kevin: owner, 1% commission (0.01 in the sheet), no fixed daily rate.
+  e('Kevin', 'Owner',        'Full Time',    0,  1, 'Owner. 1% commission on sales.'),
   e('Don',   'Farmer',       'Full Time', 1000,  0),
   e('Aljun', 'Farmer',       'Full Time',  630,  0),
   e('Tiboy', 'Farmer',       'Full Time',  750,  0),
   e('Peter', 'Farmer',       'Full Time',  540,  0, 'Rate: ₱540/day. Increasing to ₱2,900 starting 6/26/26'),
   e('Bong',  'Farmer',       'Full Time',  600,  0),
-  // Emily: daily rate unknown in Excel (only weekly ₱3,000 listed), commission-based
-  // Daily rate back-calculated: 3000/5 = 600
-  e('Emily', 'Farmer',       'Full Time',  600,  3, '3% commission if sold by Jen; 1% if sold by Kevin'),
-  // Jen: daily ₱950, monthly salary ₱40,000 (override stored in notes)
+  // Emily: only weekly ₱3,000 listed in the sheet; daily back-calculated 3000/5 = 600.
+  e('Emily', 'Farmer',       'Full Time',  600,  3, 'Weekly ₱3,000 (daily back-calculated). 3% commission.'),
+  // Jen: daily ₱950, monthly salary ₱40,000 (override stored in notes).
   e('Jen',   'Sales Person', 'Full Time',  950,  0, 'Monthly salary: ₱40,000 (overrides daily rate calculation)'),
   e('Ping',  'Farm Manager', 'Full Time',    0,  0, 'Rate TBD'),
 ];

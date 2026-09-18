@@ -13,8 +13,12 @@ import { formatPHP, formatDate } from '../../utils/format';
 
 import { useExpenseStore } from '../../store/expenseStore';
 import { useSaleStore } from '../../store/saleStore';
-
-const LINE_COLORS = ['#16a34a', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+import { LINE_COLORS, BRAND } from '../../constants/chartColors';
+import {
+  AXIS_TICK, AXIS_LINE, GRID_STROKE,
+  TOOLTIP_CONTENT_STYLE, TOOLTIP_LABEL_STYLE, TOOLTIP_ITEM_STYLE,
+  LEGEND_STYLE, LEGEND_ICON_SIZE,
+} from '../../constants/chartTheme';
 
 type Tab = 'supplies' | 'products';
 
@@ -92,7 +96,7 @@ export function PriceHistoryPage() {
             onClick={() => setTab(id)}
             className={[
               'flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors',
-              tab === id ? 'border-green-600 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300',
+              tab === id ? 'border-primary-600 text-primary-700' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300',
             ].join(' ')}
           >
             <Icon className="w-4 h-4" />
@@ -114,7 +118,7 @@ export function PriceHistoryPage() {
             <div className="max-w-sm">
               <label className="text-sm font-medium text-gray-700">Supply</label>
               <select
-                className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
                 value={supplyKey}
                 onChange={(e) => setSelectedSupply(e.target.value)}
               >
@@ -128,10 +132,10 @@ export function PriceHistoryPage() {
 
             {supplyStats && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <StatCard title="Latest Price" value={formatPHP(supplyStats.latest)} icon={TrendingUp} iconColor="text-green-600" iconBg="bg-green-50" />
-                <StatCard title="Lowest" value={formatPHP(supplyStats.min)} icon={TrendingUp} iconColor="text-blue-600" iconBg="bg-blue-50" />
+                <StatCard title="Latest Price" value={formatPHP(supplyStats.latest)} icon={TrendingUp} iconColor="text-primary-600" iconBg="bg-primary-50" />
+                <StatCard title="Lowest" value={formatPHP(supplyStats.min)} icon={TrendingUp} iconColor="text-berry-600" iconBg="bg-berry-50" />
                 <StatCard title="Highest" value={formatPHP(supplyStats.max)} icon={TrendingUp} iconColor="text-red-500" iconBg="bg-red-50" />
-                <StatCard title="Purchases" value={supplyStats.count} icon={Truck} iconColor="text-purple-600" iconBg="bg-purple-50" />
+                <StatCard title="Purchases" value={supplyStats.count} icon={Truck} iconColor="text-gold-600" iconBg="bg-gold-50" />
               </div>
             )}
 
@@ -141,11 +145,17 @@ export function PriceHistoryPage() {
               ) : (
                 <ResponsiveContainer width="100%" height={260}>
                   <LineChart data={supplyData.chart} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `₱${v}`} />
-                    <Tooltip formatter={(v) => formatPHP(Number(v))} />
-                    <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+                    <XAxis dataKey="date" tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} />
+                    <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={52} tickFormatter={(v) => `₱${v}`} />
+                    <Tooltip
+                      formatter={(v) => formatPHP(Number(v))}
+                      cursor={{ stroke: '#dcbcd6', strokeWidth: 1 }}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      itemStyle={TOOLTIP_ITEM_STYLE}
+                    />
+                    <Legend iconSize={LEGEND_ICON_SIZE} wrapperStyle={LEGEND_STYLE} />
                     {supplyData.vendors.map((vendor, i) => (
                       <Line
                         key={vendor}
@@ -167,15 +177,15 @@ export function PriceHistoryPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-gray-200 bg-gray-50">
+                    <tr className="border-b border-primary-100 bg-primary-50">
                       {['Date', 'Vendor', 'Qty', 'Unit Price', 'Total'].map((h) => (
-                        <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">{h}</th>
+                        <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-primary-800 uppercase tracking-wider">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {[...supplyData.points].reverse().map((p) => (
-                      <tr key={p.expenseId} className="hover:bg-gray-50">
+                      <tr key={p.expenseId} className="hover:bg-primary-50/50">
                         <td className="px-4 py-2.5 text-gray-600">{formatDate(p.date)}</td>
                         <td className="px-4 py-2.5 text-gray-800 font-medium">{p.vendorName || '—'}</td>
                         <td className="px-4 py-2.5 text-gray-600">{p.quantity || '—'}</td>
@@ -204,7 +214,7 @@ export function PriceHistoryPage() {
             <div className="max-w-sm">
               <label className="text-sm font-medium text-gray-700">Product</label>
               <select
-                className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
                 value={productKey}
                 onChange={(e) => setSelectedProduct(e.target.value)}
               >
@@ -220,11 +230,17 @@ export function PriceHistoryPage() {
               ) : (
                 <ResponsiveContainer width="100%" height={260}>
                   <LineChart data={productData.chart} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `₱${v}`} />
-                    <Tooltip formatter={(v) => formatPHP(Number(v))} />
-                    <Line type="monotone" dataKey="price" name="Selling Price" stroke="#16a34a" strokeWidth={2} dot={{ r: 3 }} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+                    <XAxis dataKey="date" tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} />
+                    <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={52} tickFormatter={(v) => `₱${v}`} />
+                    <Tooltip
+                      formatter={(v) => formatPHP(Number(v))}
+                      cursor={{ stroke: '#dcbcd6', strokeWidth: 1 }}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      itemStyle={TOOLTIP_ITEM_STYLE}
+                    />
+                    <Line type="monotone" dataKey="price" name="Selling Price" stroke={BRAND.primary} strokeWidth={2} dot={{ r: 3 }} />
                   </LineChart>
                 </ResponsiveContainer>
               )}
@@ -234,15 +250,15 @@ export function PriceHistoryPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-gray-200 bg-gray-50">
+                    <tr className="border-b border-primary-100 bg-primary-50">
                       {['Date', 'Qty', 'Unit Price', 'Total'].map((h) => (
-                        <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">{h}</th>
+                        <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-primary-800 uppercase tracking-wider">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {[...productData.points].reverse().map((p, i) => (
-                      <tr key={`${p.saleId}-${i}`} className="hover:bg-gray-50">
+                      <tr key={`${p.saleId}-${i}`} className="hover:bg-primary-50/50">
                         <td className="px-4 py-2.5 text-gray-600">{formatDate(p.date)}</td>
                         <td className="px-4 py-2.5 text-gray-600">{p.quantity}</td>
                         <td className="px-4 py-2.5 font-semibold text-gray-900">{formatPHP(p.unitPrice)}</td>

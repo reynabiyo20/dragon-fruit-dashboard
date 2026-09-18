@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, UserCheck, Banknote, Users } from 'lucide-react';
 import { useEmployeeStore, isEmployeeActive } from '../../store/employeeStore';
 import type { Employee } from '../../types';
@@ -30,6 +31,23 @@ export function EmployeesPage() {
 
   const [showInactive, setShowInactive] = useState(false);
 
+  // ── Cross-link focus: /employees?focus=<id> highlights that row ─────────────
+  // Set when arriving from e.g. a sale's "Sold By" link. If the target employee
+  // is inactive, reveal inactive rows so it's visible, then clear the param so a
+  // refresh doesn't re-focus.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [focusId, setFocusId] = useState<string | null>(null);
+  useEffect(() => {
+    const target = searchParams.get('focus');
+    if (!target) return;
+    setFocusId(target);
+    const emp = employees.find((e) => e.id === target);
+    if (emp && !isEmployeeActive(emp)) setShowInactive(true);
+    searchParams.delete('focus');
+    setSearchParams(searchParams, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const activeCount = useMemo(() => employees.filter(isEmployeeActive).length, [employees]);
   const inactiveCount = employees.length - activeCount;
   const visibleEmployees = useMemo(
@@ -57,11 +75,11 @@ export function EmployeesPage() {
             aria-checked={active}
             onClick={() => setActive(e.id, !active)}
             title={active ? 'Active — shown in timesheet & payroll. Click to deactivate.' : 'Inactive — hidden from timesheet & payroll. Click to activate.'}
-            className="inline-flex items-center gap-2 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-green-500 rounded-full"
+            className="inline-flex items-center gap-2 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-primary-500 rounded-full"
           >
             <span
               className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
-                active ? 'bg-green-500' : 'bg-gray-300'
+                active ? 'bg-leaf-500' : 'bg-gray-300'
               }`}
             >
               <span
@@ -70,7 +88,7 @@ export function EmployeesPage() {
                 }`}
               />
             </span>
-            <span className={`text-xs font-medium ${active ? 'text-green-700' : 'text-gray-500'}`}>
+            <span className={`text-xs font-medium ${active ? 'text-leaf-700' : 'text-gray-500'}`}>
               {active ? 'Active' : 'Inactive'}
             </span>
           </button>
@@ -80,7 +98,7 @@ export function EmployeesPage() {
     },
     { key: 'dailyRate', header: 'Daily Rate', accessor: (e) => formatPHP(e.dailyRate), sortValue: (e) => e.dailyRate },
     { key: 'weeklyRate', header: 'Weekly Rate', accessor: (e) => formatPHP(e.weeklyRate), sortValue: (e) => e.weeklyRate },
-    { key: 'monthlySalary', header: 'Monthly Salary', accessor: (e) => <span className="font-semibold text-green-700">{formatPHP(e.monthlySalary)}</span>, sortValue: (e) => e.monthlySalary },
+    { key: 'monthlySalary', header: 'Monthly Salary', accessor: (e) => <span className="font-semibold text-leaf-700">{formatPHP(e.monthlySalary)}</span>, sortValue: (e) => e.monthlySalary },
     { key: 'commission', header: 'Commission', accessor: (e) => e.commission > 0 ? `${e.commission}%` : '—', sortValue: (e) => e.commission },
     { key: 'notes', header: 'Notes', accessor: (e) => <span className="text-xs text-gray-400">{e.notes || '—'}</span>, sortValue: (e) => e.notes, editable: { type: 'text', getValue: (e) => e.notes } },
   ];
@@ -95,9 +113,9 @@ export function EmployeesPage() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        <StatCard title="Total Employees" value={employees.length} icon={UserCheck} iconColor="text-blue-600" iconBg="bg-blue-50" />
-        <StatCard title="Monthly Salary Commitment" value={formatPHP(monthlyCommitment)} subtitle="Sum of all monthly salaries" icon={Banknote} iconColor="text-green-600" iconBg="bg-green-50" />
-        <StatCard title="On Commission" value={commissionedCount} subtitle="Employees with a commission %" icon={Users} iconColor="text-purple-600" iconBg="bg-purple-50" />
+        <StatCard title="Total Employees" value={employees.length} icon={UserCheck} iconColor="text-berry-600" iconBg="bg-berry-50" />
+        <StatCard title="Monthly Salary Commitment" value={formatPHP(monthlyCommitment)} subtitle="Sum of all monthly salaries" icon={Banknote} iconColor="text-primary-600" iconBg="bg-primary-50" />
+        <StatCard title="On Commission" value={commissionedCount} subtitle="Employees with a commission %" icon={Users} iconColor="text-gold-600" iconBg="bg-gold-50" />
       </div>
 
       {/* Headcount by type */}
@@ -118,7 +136,7 @@ export function EmployeesPage() {
             type="checkbox"
             checked={showInactive}
             onChange={(e) => setShowInactive(e.target.checked)}
-            className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
+            className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
           />
           Show inactive ({inactiveCount})
         </label>
@@ -140,6 +158,9 @@ export function EmployeesPage() {
           searchPlaceholder="Search employees…"
           actions={(e) => <RowActions onEdit={() => crud.openEdit(e)} onDelete={() => crud.requestDelete(e)} />}
           onCellEdit={(e, key, value) => updateEmployee(e.id, { [key]: value })}
+          defaultSort={{ key: 'name', dir: 'asc' }}
+          getRecency={(e) => e.createdAt}
+          focusId={focusId}
         />
       )}
 

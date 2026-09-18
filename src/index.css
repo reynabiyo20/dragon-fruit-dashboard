@@ -1,5 +1,59 @@
 @import "tailwindcss";
 
+/* ── Brand theme ─────────────────────────────────────────────────────────────
+   Colors derived from the Bulacan Dragon Fruit Depot logo:
+   - primary : deep plum / aubergine (the badge ring)  → main accent
+   - berry   : dragon-fruit magenta (the fruit flesh)  → vibrant secondary
+   - gold    : amber (the inner ring)                  → highlight accent
+   - leaf    : dragon-fruit green (skin / palm leaves)  → growth / positive
+   These become Tailwind utilities: bg-primary-600, text-berry-500, ring-gold-400,
+   text-leaf-600, etc. This block is the single source of truth for brand color. */
+@theme {
+  --color-primary-50:  #f8f2f7;
+  --color-primary-100: #efdfec;
+  --color-primary-200: #dcbcd6;
+  --color-primary-300: #c491ba;
+  --color-primary-400: #a5679a;
+  --color-primary-500: #834a7c;
+  --color-primary-600: #6a3a67;
+  --color-primary-700: #542e54;
+  --color-primary-800: #402342;
+  --color-primary-900: #2e192f;
+
+  --color-berry-50:  #fdf2f6;
+  --color-berry-100: #fce4ee;
+  --color-berry-200: #fac9de;
+  --color-berry-300: #f79cc2;
+  --color-berry-400: #ef6199;
+  --color-berry-500: #d81b74;
+  --color-berry-600: #c11661;
+  --color-berry-700: #a0114f;
+  --color-berry-800: #831242;
+  --color-berry-900: #6d1339;
+
+  --color-gold-50:  #fdf8ec;
+  --color-gold-100: #faedcb;
+  --color-gold-200: #f4d894;
+  --color-gold-300: #eec25c;
+  --color-gold-400: #e9ad2e;
+  --color-gold-500: #d9941a;
+  --color-gold-600: #bd7513;
+  --color-gold-700: #975515;
+  --color-gold-800: #7c4318;
+  --color-gold-900: #683917;
+
+  --color-leaf-50:  #f3f8ec;
+  --color-leaf-100: #e4f0d3;
+  --color-leaf-200: #cbe2ac;
+  --color-leaf-300: #a9cd7b;
+  --color-leaf-400: #89b552;
+  --color-leaf-500: #6b9835;
+  --color-leaf-600: #537928;
+  --color-leaf-700: #405e22;
+  --color-leaf-800: #354c20;
+  --color-leaf-900: #2e411f;
+}
+
 @layer base {
   *, *::before, *::after {
     box-sizing: border-box;
@@ -11,7 +65,9 @@
   }
 
   body {
-    @apply bg-gray-50 text-gray-900;
+    @apply text-gray-900;
+    /* Whisper of warm plum so white cards read as elevated against the canvas. */
+    background-color: #faf7fa;
   }
 }
 

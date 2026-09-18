@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, Truck, Package, Phone } from 'lucide-react';
 import { useVendorStore } from '../../store/vendorStore';
 import type { Vendor } from '../../types';
@@ -16,6 +17,20 @@ import { VendorForm } from './VendorForm';
 export function VendorsPage() {
   const { vendors, deleteVendor, updateVendor, countBySupply } = useVendorStore();
   const crud = useListCrud<Vendor>();
+
+  // ── Cross-link focus: /vendors?focus=<id> highlights that row ───────────────
+  // Set when arriving from an expense's "Vendor" link. Clear the param after so
+  // a refresh doesn't re-focus.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [focusId, setFocusId] = useState<string | null>(null);
+  useEffect(() => {
+    const target = searchParams.get('focus');
+    if (!target) return;
+    setFocusId(target);
+    searchParams.delete('focus');
+    setSearchParams(searchParams, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const bySupply = useMemo(() => countBySupply(), [vendors]);
   const supplyCategories = Object.keys(bySupply).length;
@@ -61,15 +76,15 @@ export function VendorsPage() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        <StatCard title="Total Vendors" value={vendors.length} icon={Truck} iconColor="text-amber-600" iconBg="bg-amber-50" />
-        <StatCard title="Supply Categories" value={supplyCategories} icon={Package} iconColor="text-purple-600" iconBg="bg-purple-50" />
+        <StatCard title="Total Vendors" value={vendors.length} icon={Truck} iconColor="text-primary-600" iconBg="bg-primary-50" />
+        <StatCard title="Supply Categories" value={supplyCategories} icon={Package} iconColor="text-berry-600" iconBg="bg-berry-50" />
         <StatCard
           title="With Contact Info"
           value={`${withContact} of ${vendors.length}`}
           subtitle={allHaveContact ? 'All vendors have contact info' : `${missingContact} missing contact info`}
           icon={Phone}
-          iconColor={allHaveContact ? 'text-green-600' : 'text-red-500'}
-          iconBg={allHaveContact ? 'bg-green-50' : 'bg-red-50'}
+          iconColor={allHaveContact ? 'text-leaf-600' : 'text-red-500'}
+          iconBg={allHaveContact ? 'bg-leaf-50' : 'bg-red-50'}
         />
       </div>
 
@@ -91,6 +106,9 @@ export function VendorsPage() {
           actions={(v) => <RowActions onEdit={() => crud.openEdit(v)} onDelete={() => crud.requestDelete(v)} />}
           bulkActions={{ noun: 'vendor', onDelete: (rows) => rows.forEach((v) => deleteVendor(v.id)) }}
           onCellEdit={(v, key, value) => updateVendor(v.id, { [key]: value })}
+          defaultSort={{ key: 'vendor', dir: 'asc' }}
+          getRecency={(v) => v.createdAt}
+          focusId={focusId}
         />
       )}
 

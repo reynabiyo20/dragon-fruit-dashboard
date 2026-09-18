@@ -11,6 +11,7 @@ import { useProductStore } from '../../store/productStore';
 import { useEmployeeStore } from '../../store/employeeStore';
 import { useCommissionStore } from '../../store/commissionStore';
 import { useCuttingStore } from '../../store/cuttingStore';
+import { useInventoryStore } from '../../store/inventoryStore';
 import { useEntityMatch } from '../../hooks/useEntityMatch';
 import { EntityMatchSuggestions } from '../../components/forms/EntityMatchSuggestions';
 import { InputField, SelectField, TextareaField, CheckboxField, DisplayField } from '../../components/forms/FormField';
@@ -31,6 +32,16 @@ import type { Product } from '../../types';
 /** Whether a product is a cutting (subject to the small-order surcharge rule). */
 function isCuttingProduct(product: Product | undefined): boolean {
   return product?.category === CUTTINGS_PRODUCT_TYPE;
+}
+
+/**
+ * Whether a sale line is inventory-tracked. Everything the business sells is
+ * tracked in inventory now, so any resolvable product qualifies — its inventory
+ * row is created on receipt if it doesn't exist yet. This drives the "Received
+ * by Customer" flag, which moves inventory `sold` on fulfillment.
+ */
+function isStockProduct(product: Product | undefined): boolean {
+  return !!product && !!product.category;
 }
 
 const schema = z
@@ -89,6 +100,25 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
   const { employees } = useEmployeeStore();
   const { setForSale, removeForSale } = useCommissionStore();
   const recordCuttingPurchase = useCuttingStore((s) => s.recordCustomerPurchase);
+  // Inventory rows drive the cutting stock cap: a cutting sale can't exceed the
+  // variety's on-hand stock (ending quantity).
+  const inventoryItems = useInventoryStore((s) => s.items);
+
+  /**
+   * On-hand stock for a product — its inventory `endingQty` (beginning +
+   * purchased − used − sold + packed), i.e. everything physically available to
+   * sell. Returns undefined when there's no matching inventory row yet (so the
+   * line isn't capped — the row is created on receipt), and 0 when the row
+   * exists but is out of stock.
+   */
+  const availableStockOf = (product: Product | undefined): number | undefined => {
+    if (!isStockProduct(product) || !product) return undefined;
+    const norm = (s: string) => s.trim().toLowerCase();
+    const row = inventoryItems.find(
+      (i) => norm(i.category) === norm(product.category) && norm(i.subcategory) === norm(product.subcategory),
+    );
+    return row ? row.endingQty : undefined;
+  };
 
   // Salespeople = employees with a commission % > 0
   const salespeople = employees.filter((e) => e.commission > 0);
@@ -180,9 +210,11 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
     return isCuttingProduct(product) && quantityEntered[i._key] ? sum + i.quantity : sum;
   }, 0);
   const isSmallCuttingOrder = totalCuttingQty > 0 && totalCuttingQty < CUTTING_SMALL_ORDER_THRESHOLD;
-  // Whether this sale includes any cutting line — drives the "Delivered?" flag,
-  // which deducts from the Available-Stock-for-Sale pool on fulfillment.
-  const hasCuttingItems = items.some((i) => isCuttingProduct(products.find((p) => p.id === i.productId)));
+  // Whether this sale includes any inventory-tracked line. Everything sold is
+  // tracked in inventory, so any line with a resolvable product qualifies —
+  // this drives the "Received by Customer?" flag, which moves inventory `sold`
+  // on fulfillment (and the cutting pool for cuttings).
+  const hasStockItems = items.some((i) => isStockProduct(products.find((p) => p.id === i.productId)));
 
   // A signature of the cutting lines (which products, which are overridden) so
   // the sync effect re-runs whenever a cutting line is added/removed/repointed,
@@ -360,10 +392,31 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
     if (field === 'quantity' || (field === 'productId' && value)) {
       setQuantityEntered((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
     }
+
+    // ── Inventory stock cap ──────────────────────────────────────────────────
+    // A sale of an inventory-tracked product (Cuttings / Fruit / Fertilizer)
+    // can't exceed the variety's on-hand stock (ending qty). If the entered
+    // quantity is over, clamp it to what's in stock and flag an error.
+    let clampError = '';
+    let effectiveValue = value;
+    if (field === 'quantity') {
+      const line = items.find((i) => i._key === key);
+      const product = products.find((p) => p.id === line?.productId);
+      const stock = availableStockOf(product);
+      if (stock !== undefined && typeof value === 'number' && value > stock) {
+        effectiveValue = Math.max(0, stock);
+        clampError =
+          stock > 0
+            ? `Only ${stock} in stock — quantity set to ${stock}.`
+            : 'None in stock — add stock via Expenses or the Cuttings Store first.';
+        toast.error(clampError);
+      }
+    }
+
     setItems((prev) =>
       prev.map((i): EditableItem => {
         if (i._key !== key) return i;
-        const updated: EditableItem = { ...i, [field]: value };
+        const updated: EditableItem = { ...i, [field]: effectiveValue };
 
         if (field === 'productId') {
           const product = products.find((p) => p.id === value);
@@ -386,8 +439,9 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
         return updated;
       })
     );
-    // Clear this item's error when it changes
+    // Set the stock-cap error if we clamped; otherwise clear this line's error.
     setItemErrors((prev) => {
+      if (clampError) return { ...prev, [key]: clampError };
       if (!prev[key]) return prev;
       const next = { ...prev };
       delete next[key];
@@ -408,6 +462,19 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
         errs[i._key] = 'Quantity must be greater than 0';
       } else if (i.unitPrice <= 0) {
         errs[i._key] = 'Unit price must be greater than 0';
+      } else {
+        // Inventory-tracked sales can't exceed the variety's on-hand stock
+        // (ending qty). Skip this cap when EDITING an already-received sale, since
+        // that sale's quantity is already deducted from stock (re-checking would
+        // double-count).
+        const product = products.find((p) => p.id === i.productId);
+        const stock = availableStockOf(product);
+        const alreadyAccounted = !!sale && !!sale.delivered;
+        if (stock !== undefined && !alreadyAccounted && i.quantity > stock) {
+          errs[i._key] = stock > 0
+            ? `Only ${stock} in stock (you entered ${i.quantity}).`
+            : 'None in stock — add stock via Expenses or the Cuttings Store first.';
+        }
       }
       if (i.productId) seenProductIds.add(i.productId);
     });
@@ -515,8 +582,9 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
       paymentMethod: data.paymentMethod,
       paymentDetails: data.paymentDetails,
       paid: isPaid,
-      // Only cutting sales carry a delivery flag; other sales are never "delivered".
-      delivered: hasCuttingItems ? isDelivered : false,
+      // Only inventory-tracked sales carry a received flag; other sales (Drink /
+      // Other) never move inventory, so they are never "received".
+      delivered: hasStockItems ? isDelivered : false,
       soldByEmployeeId: data.soldByEmployeeId,
       soldByName,
       notes: data.notes,
@@ -607,7 +675,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
           Customer <span className="text-red-500">*</span>
         </label>
         <select
-          className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+          className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
           value={selectedCustomerId}
           onChange={handleCustomerChange}
         >
@@ -696,8 +764,8 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
 
       {/* Online-order contact info — required when the sale type is Online Orders */}
       {isOnlineOrder && (
-        <div className="p-3 bg-blue-50 border border-blue-100 rounded-lg space-y-3">
-          <div className="flex items-center gap-1.5 text-sm font-medium text-blue-800">
+        <div className="p-3 bg-primary-50 border border-primary-100 rounded-lg space-y-3">
+          <div className="flex items-center gap-1.5 text-sm font-medium text-primary-800">
             <AlertCircle className="w-4 h-4" />
             Online Order — contact number &amp; delivery address required
           </div>
@@ -736,7 +804,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
               value={productSearch}
               onChange={(e) => setProductSearch(e.target.value)}
               placeholder="Search products…"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
             />
             {pickerProducts.length === 0 ? (
               <p className="text-xs text-gray-400">
@@ -753,7 +821,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
                       type="checkbox"
                       checked={selectedProductIds.has(product.id)}
                       onChange={() => toggleProduct(product)}
-                      className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
+                      className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
                     />
                     <span className="flex-1 truncate text-gray-700">{label}</span>
                     {product.sellingPricePHP > 0 && (
@@ -777,7 +845,8 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
             <div key={item._key}>
               {(() => {
                 const product = products.find((p) => p.id === item.productId);
-                const isCutting = product?.category === CUTTINGS_PRODUCT_TYPE;
+                const isStock = isStockProduct(product);
+                const isCutting = isCuttingProduct(product);
                 return (
               <div className="grid grid-cols-12 gap-2 items-end p-2 bg-gray-50 rounded-lg">
                 <div className="col-span-3 min-w-0">
@@ -787,15 +856,24 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
                   </div>
                 </div>
                 <div className="col-span-2">
-                  <label className="text-xs text-gray-500 mb-0.5 block">Qty *</label>
+                  <label className="text-xs text-gray-500 mb-0.5 block">
+                    Qty *
+                    {isStock && (() => {
+                      const stock = availableStockOf(product);
+                      return stock !== undefined ? (
+                        <span className="text-gray-400 font-normal"> · {stock} in stock</span>
+                      ) : null;
+                    })()}
+                  </label>
                   <input
                     type="number"
                     min="0"
                     step="0.01"
+                    max={isStock ? availableStockOf(product) : undefined}
                     value={item.quantity}
                     onChange={(e) => updateItem(item._key, 'quantity', parseFloat(e.target.value) || 0)}
                     className={[
-                      'w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-1 focus:ring-green-500',
+                      'w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-1 focus:ring-primary-500',
                       itemErrors[item._key] && item.quantity <= 0 ? 'border-red-400 bg-red-50' : 'border-gray-300',
                     ].join(' ')}
                   />
@@ -809,7 +887,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
                     value={item.unitPrice}
                     onChange={(e) => updateItem(item._key, 'unitPrice', parseFloat(e.target.value) || 0)}
                     className={[
-                      'w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-1 focus:ring-green-500',
+                      'w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-1 focus:ring-primary-500',
                       itemErrors[item._key] && item.unitPrice <= 0 ? 'border-red-400 bg-red-50' : 'border-gray-300',
                     ].join(' ')}
                   />
@@ -826,15 +904,15 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
                     onChange={(e) => updateItem(item._key, 'surcharge', parseFloat(e.target.value) || 0)}
                     disabled={!isCutting}
                     className={[
-                      'w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-1 focus:ring-green-500',
-                      (item.surcharge || 0) > 0 ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300',
+                      'w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-1 focus:ring-primary-500',
+                      (item.surcharge || 0) > 0 ? 'border-gold-400 bg-gold-50' : 'border-gray-300',
                       !isCutting ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : '',
                     ].join(' ')}
                   />
                 </div>
                 <div className="col-span-2">
                   <label className="text-xs text-gray-500 mb-0.5 block">Total</label>
-                  <div className="px-2 py-1.5 text-sm bg-white border border-gray-200 rounded font-medium text-green-700">
+                  <div className="px-2 py-1.5 text-sm bg-white border border-gray-200 rounded font-medium text-leaf-700">
                     {formatPHP(lineTotal(item))}
                   </div>
                 </div>
@@ -859,14 +937,14 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
                 if (!product) return null;
                 if (product.sellingPricePHP === 0 && item.unitPrice > 0) {
                   return (
-                    <p className="text-xs text-blue-600 mt-1 ml-2">
+                    <p className="text-xs text-primary-600 mt-1 ml-2">
                       This price will be saved as the default for "{categoryLabel(product.category, product.subcategory)}".
                     </p>
                   );
                 }
                 if (product.sellingPricePHP > 0 && item.unitPrice !== product.sellingPricePHP) {
                   return (
-                    <p className="text-xs text-amber-600 mt-1 ml-2">
+                    <p className="text-xs text-gold-600 mt-1 ml-2">
                       Custom price for this sale (default is {formatPHP(product.sellingPricePHP)} — not changed).
                     </p>
                   );
@@ -884,7 +962,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
           );
           const anySurcharged = cuttingLines.some((i) => (i.surcharge || 0) > 0);
           return (
-            <div className="mt-3 flex items-start gap-1.5 rounded-lg border border-yellow-200 bg-yellow-50 p-2.5 text-xs text-yellow-800">
+            <div className="mt-3 flex items-start gap-1.5 rounded-lg border border-gold-200 bg-gold-50 p-2.5 text-xs text-gold-800">
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <span>
                 {anySurcharged
@@ -930,7 +1008,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
             if (!sp) return null;
             const commission = subtotal * (sp.commission / 100);
             return (
-              <p className="text-xs text-blue-600 mt-1">
+              <p className="text-xs text-primary-600 mt-1">
                 {sp.name} earns {formatPHP(commission)} ({sp.commission}% of {formatPHP(subtotal)}) — added to their commission bucket for {watch('date')}.
               </p>
             );
@@ -940,14 +1018,16 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
 
       <CheckboxField label="Paid" checked={isPaid} onChange={setIsPaid} />
 
-      {/* Fulfillment — only relevant to cutting orders. Marking delivered
-          permanently deducts the cutting quantity from Available Stock for Sale. */}
-      {hasCuttingItems && (
+      {/* Fulfillment — shown for any sale with a resolvable product (all sold
+          products are inventory-tracked). Marking received deducts the quantity
+          from inventory (its `sold`, auto-creating the row if needed), and from
+          Available Stock for Sale for cuttings. */}
+      {hasStockItems && (
         <CheckboxField
-          label="Delivered?"
+          label="Received by Customer?"
           checked={isDelivered}
           onChange={setIsDelivered}
-          hint="Marks the cuttings as fulfilled and deducts them from Available Stock for Sale."
+          hint="Marks the items as received by the customer and deducts them from inventory stock."
         />
       )}
       <TextareaField label="Notes" {...register('notes')} rows={2} />

@@ -15,8 +15,8 @@ export function StatCard({
   value,
   subtitle,
   icon: Icon,
-  iconColor = 'text-green-600',
-  iconBg = 'bg-green-50',
+  iconColor = 'text-primary-600',
+  iconBg = 'bg-primary-50',
   trend,
 }: StatCardProps) {
   return (
@@ -27,7 +27,7 @@ export function StatCard({
           <p className="mt-1 text-2xl font-bold text-gray-900 truncate">{value}</p>
           {subtitle && <p className="mt-1 text-xs text-gray-400">{subtitle}</p>}
           {trend && (
-            <p className={`mt-2 text-xs font-medium ${trend.value >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+            <p className={`mt-2 text-xs font-medium ${trend.value >= 0 ? 'text-leaf-600' : 'text-red-500'}`}>
               {trend.value >= 0 ? '↑' : '↓'} {Math.abs(trend.value)}% {trend.label}
             </p>
           )}

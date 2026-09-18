@@ -33,8 +33,8 @@ export function EntityMatchSuggestions<T>({
     <>
       {/* Partial-match suggestions */}
       {matches.length > 0 && !exact && (
-        <div className="rounded-lg border border-blue-100 bg-blue-50 p-2">
-          <p className="text-xs font-medium text-blue-700 mb-1">
+        <div className="rounded-lg border border-primary-100 bg-primary-50 p-2">
+          <p className="text-xs font-medium text-primary-700 mb-1">
             Existing {noun}s matching "{query.trim()}":
           </p>
           <div className="flex flex-wrap gap-1.5">
@@ -43,13 +43,13 @@ export function EntityMatchSuggestions<T>({
                 key={keyOf(item)}
                 type="button"
                 onClick={() => onUseExisting(item)}
-                className="px-2.5 py-1 text-xs font-medium bg-white border border-blue-200 rounded-full text-blue-700 hover:bg-blue-100 transition-colors"
+                className="px-2.5 py-1 text-xs font-medium bg-white border border-primary-200 rounded-full text-primary-700 hover:bg-primary-100 transition-colors"
               >
                 {labelOf(item)}
               </button>
             ))}
           </div>
-          <p className="text-xs text-blue-500 mt-1.5">
+          <p className="text-xs text-primary-500 mt-1.5">
             Click to use an existing {noun}, or keep typing to add a new one.
           </p>
         </div>
@@ -57,14 +57,14 @@ export function EntityMatchSuggestions<T>({
 
       {/* Exact-match notice */}
       {exact && (
-        <div className="rounded-lg border border-green-100 bg-green-50 p-2 flex items-center justify-between">
-          <span className="text-xs text-green-700">
+        <div className="rounded-lg border border-primary-100 bg-primary-50 p-2 flex items-center justify-between">
+          <span className="text-xs text-primary-700">
             "{labelOf(exact)}" already exists — this will link to their record.
           </span>
           <button
             type="button"
             onClick={() => onUseExisting(exact)}
-            className="px-2.5 py-1 text-xs font-medium bg-white border border-green-200 rounded-full text-green-700 hover:bg-green-100"
+            className="px-2.5 py-1 text-xs font-medium bg-white border border-primary-200 rounded-full text-primary-700 hover:bg-primary-100"
           >
             Use existing
           </button>

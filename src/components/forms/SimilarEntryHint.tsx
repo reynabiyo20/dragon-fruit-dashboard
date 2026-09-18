@@ -45,18 +45,22 @@ export function SimilarEntryHint({
     return { exact: undefined as string | undefined, similar: similarMatches };
   }, [key, options, limit]);
 
-  // Exact duplicate → tell the user it already exists.
-  if (exact) {
+  // Exact duplicate → only advise when the value the user typed DIFFERS from the
+  // canonical option (e.g. a different case/whitespace variant). If it already
+  // equals the option exactly, the user has simply selected it — there's nothing
+  // to warn about, so render nothing (prevents the notice from lingering after a
+  // selection is made).
+  if (exact && exact !== value.trim()) {
     return (
-      <div className="mt-1 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
+      <div className="mt-1 rounded-lg border border-gold-200 bg-gold-50 p-2 text-xs text-gold-700">
         "{exact}" already exists as a {noun}.
-        {onPick && exact !== value ? (
+        {onPick ? (
           <>
             {' '}
             <button
               type="button"
               onClick={() => onPick(exact)}
-              className="underline font-medium hover:text-amber-800"
+              className="underline font-medium hover:text-gold-800"
             >
               Use "{exact}"
             </button>
@@ -71,21 +75,21 @@ export function SimilarEntryHint({
   // Partial matches → suggest reusing an existing value.
   if (similar.length > 0) {
     return (
-      <div className="mt-1 rounded-lg border border-blue-100 bg-blue-50 p-2">
-        <p className="text-xs font-medium text-blue-700 mb-1">Similar existing {noun}s:</p>
+      <div className="mt-1 rounded-lg border border-primary-100 bg-primary-50 p-2">
+        <p className="text-xs font-medium text-primary-700 mb-1">Similar existing {noun}s:</p>
         <div className="flex flex-wrap gap-1.5">
           {similar.map((s) => (
             <button
               key={s}
               type="button"
               onClick={() => onPick?.(s)}
-              className="px-2.5 py-1 text-xs font-medium bg-white border border-blue-200 rounded-full text-blue-700 hover:bg-blue-100 transition-colors"
+              className="px-2.5 py-1 text-xs font-medium bg-white border border-primary-200 rounded-full text-primary-700 hover:bg-primary-100 transition-colors"
             >
               {s}
             </button>
           ))}
         </div>
-        <p className="text-xs text-blue-500 mt-1.5">
+        <p className="text-xs text-primary-500 mt-1.5">
           Click to reuse one, or keep "{value.trim()}" to add it as new.
         </p>
       </div>

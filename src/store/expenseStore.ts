@@ -5,6 +5,20 @@ import { generateId, now } from '../utils/id';
 import { categoryLabel } from '../utils/format';
 import { recordExpenseInventory, reverseExpenseInventory } from './inventoryLink';
 
+/**
+ * A stable string of just the fields that feed inventory `purchased` (category,
+ * subcategory, quantity, unit, unit price — flat and per-item). Two expenses
+ * with the same signature affect inventory identically, so an edit that leaves
+ * the signature unchanged (e.g. editing Notes) needs no inventory reconciliation.
+ */
+function purchaseSignature(e: Expense): string {
+  const flat = `${e.category}|${e.subcategory}|${e.quantity ?? 0}|${e.unit ?? ''}|${e.unitPrice ?? 0}|${e.cuttingState ?? ''}`;
+  const items = (e.items ?? [])
+    .map((it) => `${it.category}|${it.subcategory}|${it.quantity}|${it.unit ?? ''}|${it.unitPrice ?? 0}|${it.cuttingState ?? ''}`)
+    .join(';');
+  return `${flat}#${items}`;
+}
+
 /** A single dated price observation for a supply */
 export interface SupplyPricePoint {
   date: string;
@@ -144,7 +158,11 @@ export const useExpenseStore = create<ExpenseState>()(
             return next;
           }),
         }));
-        if (prev && next) {
+        // Only reconcile inventory when a purchase-relevant field actually
+        // changed. This lets lightweight edits (e.g. an inline Notes or Paid
+        // toggle from the table) skip the reverse/re-record churn and any
+        // spurious "unmatched line" warnings.
+        if (prev && next && purchaseSignature(prev) !== purchaseSignature(next)) {
           reverseExpenseInventory(prev);
           recordExpenseInventory(next);
         }

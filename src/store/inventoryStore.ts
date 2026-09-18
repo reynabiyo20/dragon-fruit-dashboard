@@ -5,19 +5,60 @@ import { generateId, now } from '../utils/id';
 
 /**
  * Auto-calculate ending (on-hand) quantity.
- *   endingQty = beginning + purchased − used − sold + packed
- * `packed` matters for cuttings: finished cuttings only become on-hand sellable
- * stock once a rooted batch is "Marked as Packed" (see cuttingStore.markPacked).
- * For non-cuttings rows `packed` is simply 0, so the formula reduces to the
- * classic beginning + purchased − used − sold.
+ *   endingQty = beginning + purchased − used − sold + packed + needsPacking
+ * The two cutting-only pools both hold physical stock on hand:
+ *   - `packed`: cuttings ready to sell (farm-packed via markPacked, or bought
+ *     from a customer already packed). Also drives the "Ready for Sale" pool.
+ *   - `needsPacking`: bare cuttings bought from a customer that still need
+ *     packing before they can be sold.
+ * For non-cuttings rows both are 0, so the formula reduces to the classic
+ * beginning + purchased − used − sold.
  */
-function calcEnding(item: Pick<InventoryItem, 'beginningQty' | 'purchased' | 'used' | 'sold' | 'packed'>): number {
-  return item.beginningQty + item.purchased - item.used - item.sold + (item.packed ?? 0);
+function calcEnding(
+  item: Pick<InventoryItem, 'beginningQty' | 'purchased' | 'used' | 'sold' | 'packed' | 'needsPacking' | 'produced'>,
+): number {
+  return (
+    item.beginningQty + item.purchased - item.used - item.sold +
+    (item.packed ?? 0) + (item.needsPacking ?? 0) + (item.produced ?? 0)
+  );
 }
 
 /** Normalize a category/subcategory token for tolerant matching (case + whitespace). */
 function norm(value: string): string {
   return value.trim().toLowerCase();
+}
+
+/**
+ * Collapse any duplicate (category, subcategory) rows into a single row by
+ * summing their quantities. The first-seen row wins for identity fields
+ * (id/unit/unitCost/notes/dates); its quantity pools accumulate the rest.
+ * Keeps inventory to exactly one row per category+subcategory.
+ */
+function dedupeItems(items: InventoryItem[]): InventoryItem[] {
+  const byKey = new Map<string, InventoryItem>();
+  for (const raw of items) {
+    const item = { packed: 0, needsPacking: 0, breedingStock: 0, availableForSale: 0, produced: 0, ...raw };
+    const key = `${norm(item.category)}||${norm(item.subcategory)}`;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...item });
+      continue;
+    }
+    existing.beginningQty += item.beginningQty;
+    existing.purchased += item.purchased;
+    existing.used += item.used;
+    existing.sold += item.sold;
+    existing.packed = (existing.packed ?? 0) + (item.packed ?? 0);
+    existing.needsPacking = (existing.needsPacking ?? 0) + (item.needsPacking ?? 0);
+    existing.breedingStock = (existing.breedingStock ?? 0) + (item.breedingStock ?? 0);
+    existing.availableForSale = (existing.availableForSale ?? 0) + (item.availableForSale ?? 0);
+    existing.produced = (existing.produced ?? 0) + (item.produced ?? 0);
+    if (!existing.unit && item.unit) existing.unit = item.unit;
+    if (existing.unitCost === 0 && item.unitCost > 0) existing.unitCost = item.unitCost;
+    if (!existing.notes && item.notes) existing.notes = item.notes;
+  }
+  // Recompute endingQty for every merged row.
+  return [...byKey.values()].map((i) => ({ ...i, endingQty: calcEnding(i) }));
 }
 
 type NewInventoryInput = Omit<InventoryItem, 'id' | 'endingQty' | 'createdAt' | 'updatedAt'>;
@@ -54,13 +95,31 @@ interface InventoryState {
   adjustBreedingStock: (id: string, delta: number) => void;
   /** Add `delta` to an item's `availableForSale` pool (never below 0). */
   adjustAvailableForSale: (id: string, delta: number) => void;
+  /**
+   * Add `delta` to an item's `needsPacking` pool (never below 0); recomputes
+   * endingQty. Bare cuttings bought from a customer land here until packed.
+   */
+  adjustNeedsPacking: (id: string, delta: number) => void;
+  /**
+   * Add `delta` to an item's `produced` pool (never below 0); recomputes
+   * endingQty. Finished goods manufactured in-house from other inventory land here.
+   */
+  adjustProduced: (id: string, delta: number) => void;
+  /**
+   * Pack `qty` bare cuttings on a row: moves them from `needsPacking` into
+   * `packed` (and credits the `availableForSale` / Ready-for-Sale pool). `qty`
+   * is clamped to what's currently in `needsPacking`. Returns the quantity
+   * actually packed (0 if nothing to pack). endingQty is unchanged — the stock
+   * was already on hand; it just becomes sellable.
+   */
+  packCuttings: (id: string, qty: number) => number;
   /** Total inventory value = sum of endingQty * unitCost */
   totalValue: () => number;
   /** Items where endingQty <= lowStockThreshold */
   lowStockItems: (threshold?: number) => InventoryItem[];
 }
 
-const SEED_VERSION = 6;
+const SEED_VERSION = 9;
 
 /** Build an inventory item row cleanly */
 function inv(
@@ -82,8 +141,10 @@ function inv(
     endingQty: 0,
     unitCost,
     packed: 0,
+    needsPacking: 0,
     breedingStock: 0,
     availableForSale: 0,
+    produced: 0,
     notes,
     createdAt: now(),
     updatedAt: now(),
@@ -149,12 +210,40 @@ export const useInventoryStore = create<InventoryState>()(
       _seeded: SEED_VERSION,
 
       addItem: (data) => {
+        // Enforce ONE row per (category, subcategory): if a row already exists,
+        // merge the incoming quantities into it instead of creating a duplicate.
+        // This prevents split stock where a cascade lands on one row while the
+        // user is looking at another with the same category+subcategory.
+        const existing = get().findByCategorySub(data.category, data.subcategory);
+        if (existing) {
+          const merged: InventoryItem = {
+            ...existing,
+            beginningQty: existing.beginningQty + (data.beginningQty ?? 0),
+            purchased: existing.purchased + (data.purchased ?? 0),
+            used: existing.used + (data.used ?? 0),
+            sold: existing.sold + (data.sold ?? 0),
+            packed: (existing.packed ?? 0) + (data.packed ?? 0),
+            needsPacking: (existing.needsPacking ?? 0) + (data.needsPacking ?? 0),
+            breedingStock: (existing.breedingStock ?? 0) + (data.breedingStock ?? 0),
+            availableForSale: (existing.availableForSale ?? 0) + (data.availableForSale ?? 0),
+            produced: (existing.produced ?? 0) + (data.produced ?? 0),
+            // Backfill a missing unit / zero cost from the new data; never clobber.
+            unit: existing.unit || data.unit,
+            unitCost: existing.unitCost > 0 ? existing.unitCost : (data.unitCost ?? 0),
+            updatedAt: now(),
+          };
+          merged.endingQty = calcEnding(merged);
+          set((state) => ({ items: state.items.map((i) => (i.id === existing.id ? merged : i)) }));
+          return merged;
+        }
         const item: InventoryItem = {
           packed: 0,
+          needsPacking: 0,
           breedingStock: 0,
           availableForSale: 0,
+          produced: 0,
           ...data,
-          endingQty: calcEnding({ packed: 0, ...data }),
+          endingQty: calcEnding({ packed: 0, needsPacking: 0, produced: 0, ...data }),
           id: generateId(),
           createdAt: now(),
           updatedAt: now(),
@@ -227,8 +316,10 @@ export const useInventoryStore = create<InventoryState>()(
           sold: 0,
           unitCost: 0,
           packed: 0,
+          needsPacking: 0,
           breedingStock: 0,
           availableForSale: 0,
+          produced: 0,
           notes: '',
         });
       },
@@ -251,6 +342,50 @@ export const useInventoryStore = create<InventoryState>()(
           ),
         })),
 
+      adjustNeedsPacking: (id, delta) =>
+        set((state) => ({
+          items: state.items.map((i) => {
+            if (i.id !== id) return i;
+            const updated = { ...i, needsPacking: Math.max(0, (i.needsPacking ?? 0) + delta), updatedAt: now() };
+            updated.endingQty = calcEnding(updated);
+            return updated;
+          }),
+        })),
+
+      adjustProduced: (id, delta) =>
+        set((state) => ({
+          items: state.items.map((i) => {
+            if (i.id !== id) return i;
+            const updated = { ...i, produced: Math.max(0, (i.produced ?? 0) + delta), updatedAt: now() };
+            updated.endingQty = calcEnding(updated);
+            return updated;
+          }),
+        })),
+
+      packCuttings: (id, qty) => {
+        const row = get().items.find((i) => i.id === id);
+        if (!row) return 0;
+        // Clamp to what's actually bare and to a positive amount.
+        const toPack = Math.min(Math.max(0, qty), row.needsPacking ?? 0);
+        if (toPack <= 0) return 0;
+        set((state) => ({
+          items: state.items.map((i) => {
+            if (i.id !== id) return i;
+            const updated = {
+              ...i,
+              needsPacking: Math.max(0, (i.needsPacking ?? 0) - toPack),
+              packed: (i.packed ?? 0) + toPack,
+              availableForSale: (i.availableForSale ?? 0) + toPack,
+              updatedAt: now(),
+            };
+            // endingQty unchanged: needsPacking − toPack + packed + toPack nets 0.
+            updated.endingQty = calcEnding(updated);
+            return updated;
+          }),
+        }));
+        return toPack;
+      },
+
       totalValue: () =>
         get().items.reduce((sum, i) => sum + i.endingQty * i.unitCost, 0),
 
@@ -265,14 +400,11 @@ export const useInventoryStore = create<InventoryState>()(
           // Pre-v4 stores predate the current seed shape — reseed wholesale.
           state.items = SEED_ITEMS;
         } else {
-          // v4→v6: keep existing rows, default the allocation pools (packed,
-          // breedingStock, availableForSale), and recompute endingQty so it
-          // reflects the new + packed term.
-          state.items = state.items.map((i) => {
-            const merged = { packed: 0, breedingStock: 0, availableForSale: 0, ...i };
-            merged.endingQty = calcEnding(merged);
-            return merged;
-          });
+          // v4→v9: keep existing rows, default the allocation pools (incl. the
+          // needsPacking and produced pools), recompute endingQty, AND collapse
+          // any duplicate (category, subcategory) rows into one so split stock is
+          // merged.
+          state.items = dedupeItems(state.items);
         }
         state._seeded = SEED_VERSION;
       },

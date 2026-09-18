@@ -31,6 +31,7 @@ export function CustomersPage() {
     { key: 'fbMessengerName', header: 'FB Handler', accessor: (c) => c.fbMessengerName || '—', sortValue: (c) => c.fbMessengerName, editable: { type: 'text', getValue: (c) => c.fbMessengerName } },
     { key: 'email', header: 'Email', accessor: (c) => c.email || '—', sortValue: (c) => c.email, editable: { type: 'text', getValue: (c) => c.email } },
     { key: 'address', header: 'Address', accessor: (c) => <span className="text-xs text-gray-500">{c.address || '—'}</span>, sortValue: (c) => c.address, editable: { type: 'text', getValue: (c) => c.address } },
+    { key: 'notes', header: 'Notes', accessor: (c) => c.notes?.trim() ? <span className="text-gray-600">{c.notes}</span> : <span className="text-gray-300">—</span>, sortValue: (c) => c.notes ?? '', editable: { type: 'text', getValue: (c) => c.notes ?? '' } },
   ];
 
   return (
@@ -43,14 +44,14 @@ export function CustomersPage() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <StatCard title="Total Customers" value={customers.length} icon={Users} iconColor="text-cyan-600" iconBg="bg-cyan-50" />
+        <StatCard title="Total Customers" value={customers.length} icon={Users} iconColor="text-primary-600" iconBg="bg-primary-50" />
         <StatCard
           title="With Contact Info"
           value={`${withContact} of ${customers.length}`}
           subtitle={allHaveContact ? 'All customers have contact info' : `${missingContact} missing contact info`}
           icon={UserPlus}
-          iconColor={allHaveContact ? 'text-green-600' : 'text-red-500'}
-          iconBg={allHaveContact ? 'bg-green-50' : 'bg-red-50'}
+          iconColor={allHaveContact ? 'text-leaf-600' : 'text-red-500'}
+          iconBg={allHaveContact ? 'bg-leaf-50' : 'bg-red-50'}
         />
       </div>
 
@@ -73,6 +74,8 @@ export function CustomersPage() {
           actions={(c) => <RowActions onEdit={() => crud.openEdit(c)} onDelete={() => crud.requestDelete(c)} />}
           bulkActions={{ noun: 'customer', onDelete: (rows) => rows.forEach((c) => deleteCustomer(c.id)) }}
           onCellEdit={(c, key, value) => updateCustomer(c.id, { [key]: value })}
+          defaultSort={{ key: 'customerName', dir: 'asc' }}
+          getRecency={(c) => c.createdAt}
         />
       )}
 

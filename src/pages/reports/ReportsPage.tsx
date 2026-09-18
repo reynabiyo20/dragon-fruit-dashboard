@@ -21,8 +21,13 @@ import { useSaleStore } from '../../store/saleStore';
 import { useExpenseStore } from '../../store/expenseStore';
 import { usePayrollStore } from '../../store/payrollStore';
 import { useProductStore } from '../../store/productStore';
-
-const PIE_COLORS = ['#16a34a', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
+import { PIE_COLORS, CHART_REVENUE, CHART_EXPENSE, CHART_PAYROLL, CHART_PROFIT } from '../../constants/chartColors';
+import {
+  AXIS_TICK, AXIS_LINE, GRID_STROKE,
+  TOOLTIP_CONTENT_STYLE, TOOLTIP_LABEL_STYLE, TOOLTIP_ITEM_STYLE,
+  LEGEND_STYLE, LEGEND_ICON_SIZE,
+  PIE_OUTER_RADIUS, PIE_INNER_RADIUS, PIE_CENTER_Y, renderPieValueLabel,
+} from '../../constants/chartTheme';
 
 // ─── Tab type ────────────────────────────────────────────────────────────────
 type Tab = 'pnl' | 'sales' | 'financial';
@@ -187,21 +192,21 @@ export function ReportsPage() {
 
       {/* Summary KPIs */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        <StatCard title="Total Revenue" value={formatPHP(totalRevenue)} icon={TrendingUp} iconColor="text-green-600" iconBg="bg-green-50" />
+        <StatCard title="Total Revenue" value={formatPHP(totalRevenue)} icon={TrendingUp} iconColor="text-leaf-600" iconBg="bg-leaf-50" />
         <StatCard title="Total Expenses" value={formatPHP(totalExpenses + totalPayroll)} icon={TrendingDown} iconColor="text-red-500" iconBg="bg-red-50" />
         <StatCard
           title="Net Profit"
           value={formatPHP(netProfit)}
           icon={DollarSign}
-          iconColor={netProfit >= 0 ? 'text-green-600' : 'text-red-500'}
-          iconBg={netProfit >= 0 ? 'bg-green-50' : 'bg-red-50'}
+          iconColor={netProfit >= 0 ? 'text-leaf-600' : 'text-red-500'}
+          iconBg={netProfit >= 0 ? 'bg-leaf-50' : 'bg-red-50'}
         />
         <StatCard
           title="Profit Margin"
           value={`${profitMarginPct.toFixed(1)}%`}
           icon={BarChart2}
-          iconColor={profitMarginPct >= 0 ? 'text-blue-600' : 'text-red-500'}
-          iconBg="bg-blue-50"
+          iconColor={profitMarginPct >= 0 ? 'text-leaf-600' : 'text-red-500'}
+          iconBg={profitMarginPct >= 0 ? 'bg-leaf-50' : 'bg-red-50'}
         />
       </div>
 
@@ -214,7 +219,7 @@ export function ReportsPage() {
             className={[
               'flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors',
               activeTab === id
-                ? 'border-green-600 text-green-700'
+                ? 'border-primary-600 text-primary-700'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300',
             ].join(' ')}
           >
@@ -238,15 +243,21 @@ export function ReportsPage() {
               <SectionCard title="Revenue vs Expenses vs Profit" subtitle="Monthly breakdown">
                 <ResponsiveContainer width="100%" height={280}>
                   <BarChart data={monthlyPnL} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `₱${(v / 1000).toFixed(0)}k`} />
-                    <Tooltip formatter={(v) => formatPHP(Number(v))} />
-                    <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-                    <Bar dataKey="revenue"  name="Revenue"  fill="#16a34a" radius={[3, 3, 0, 0]} />
-                    <Bar dataKey="expenses" name="Expenses" fill="#ef4444" radius={[3, 3, 0, 0]} />
-                    <Bar dataKey="payroll"  name="Payroll"  fill="#f59e0b" radius={[3, 3, 0, 0]} />
-                    <Bar dataKey="profit"   name="Profit"   fill="#3b82f6" radius={[3, 3, 0, 0]} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+                    <XAxis dataKey="month" tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} />
+                    <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={52} tickFormatter={(v) => `₱${(v / 1000).toFixed(0)}k`} />
+                    <Tooltip
+                      formatter={(v) => formatPHP(Number(v))}
+                      cursor={{ fill: 'rgba(106, 58, 103, 0.06)' }}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      itemStyle={TOOLTIP_ITEM_STYLE}
+                    />
+                    <Legend iconSize={LEGEND_ICON_SIZE} wrapperStyle={LEGEND_STYLE} />
+                    <Bar dataKey="revenue"  name="Revenue"  fill={CHART_REVENUE} radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="expenses" name="Expenses" fill={CHART_EXPENSE} radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="payroll"  name="Payroll"  fill={CHART_PAYROLL} radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="profit"   name="Profit"   fill={CHART_PROFIT} radius={[3, 3, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </SectionCard>
@@ -256,9 +267,9 @@ export function ReportsPage() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-gray-200 bg-gray-50">
+                      <tr className="border-b border-gray-200 bg-primary-50">
                         {['Month', 'Revenue', 'Expenses', 'Payroll', 'Total Cost', 'Net Profit', 'Margin'].map((h) => (
-                          <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                          <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-primary-800 uppercase tracking-wider">
                             {h}
                           </th>
                         ))}
@@ -269,13 +280,13 @@ export function ReportsPage() {
                         const totalCost = row.expenses + row.payroll;
                         const margin = row.revenue > 0 ? (row.profit / row.revenue) * 100 : 0;
                         return (
-                          <tr key={row.month} className="hover:bg-gray-50">
+                          <tr key={row.month} className="hover:bg-primary-50/50">
                             <td className="px-4 py-2.5 font-medium text-gray-900">{row.month}</td>
-                            <td className="px-4 py-2.5 text-green-700 font-medium">{formatPHP(row.revenue)}</td>
+                            <td className="px-4 py-2.5 text-leaf-700 font-medium">{formatPHP(row.revenue)}</td>
                             <td className="px-4 py-2.5 text-red-600">{formatPHP(row.expenses)}</td>
-                            <td className="px-4 py-2.5 text-orange-600">{formatPHP(row.payroll)}</td>
+                            <td className="px-4 py-2.5 text-gold-600">{formatPHP(row.payroll)}</td>
                             <td className="px-4 py-2.5 text-gray-700">{formatPHP(totalCost)}</td>
-                            <td className={`px-4 py-2.5 font-bold ${row.profit >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+                            <td className={`px-4 py-2.5 font-bold ${row.profit >= 0 ? 'text-leaf-700' : 'text-red-600'}`}>
                               {formatPHP(row.profit)}
                             </td>
                             <td className="px-4 py-2.5">
@@ -290,13 +301,13 @@ export function ReportsPage() {
                     </tbody>
                     {/* Totals row */}
                     <tfoot>
-                      <tr className="border-t-2 border-gray-300 bg-gray-50 font-bold">
+                      <tr className="border-t-2 border-gray-300 bg-primary-50 font-bold">
                         <td className="px-4 py-2.5 text-gray-900">TOTAL</td>
-                        <td className="px-4 py-2.5 text-green-700">{formatPHP(totalRevenue)}</td>
+                        <td className="px-4 py-2.5 text-leaf-700">{formatPHP(totalRevenue)}</td>
                         <td className="px-4 py-2.5 text-red-600">{formatPHP(totalExpenses)}</td>
-                        <td className="px-4 py-2.5 text-orange-600">{formatPHP(totalPayroll)}</td>
+                        <td className="px-4 py-2.5 text-gold-600">{formatPHP(totalPayroll)}</td>
                         <td className="px-4 py-2.5 text-gray-700">{formatPHP(totalExpenses + totalPayroll)}</td>
-                        <td className={`px-4 py-2.5 ${netProfit >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+                        <td className={`px-4 py-2.5 ${netProfit >= 0 ? 'text-leaf-700' : 'text-red-600'}`}>
                           {formatPHP(netProfit)}
                         </td>
                         <td className="px-4 py-2.5">
@@ -326,11 +337,17 @@ export function ReportsPage() {
               ) : (
                 <ResponsiveContainer width="100%" height={260}>
                   <BarChart data={salesByProduct} layout="vertical" margin={{ left: 20, right: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={(v) => `₱${(v / 1000).toFixed(0)}k`} />
-                    <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={120} />
-                    <Tooltip formatter={(v) => formatPHP(Number(v))} />
-                    <Bar dataKey="revenue" name="Revenue" fill="#16a34a" radius={[0, 3, 3, 0]} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} horizontal={false} />
+                    <XAxis type="number" tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} tickFormatter={(v) => `₱${(v / 1000).toFixed(0)}k`} />
+                    <YAxis type="category" dataKey="name" tick={AXIS_TICK} axisLine={false} tickLine={false} width={120} />
+                    <Tooltip
+                      formatter={(v) => formatPHP(Number(v))}
+                      cursor={{ fill: 'rgba(106, 58, 103, 0.06)' }}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      itemStyle={TOOLTIP_ITEM_STYLE}
+                    />
+                    <Bar dataKey="revenue" name="Revenue" fill={CHART_REVENUE} radius={[0, 3, 3, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               )}
@@ -341,26 +358,31 @@ export function ReportsPage() {
               {salesByCustomer.length === 0 ? (
                 <p className="text-sm text-gray-400 py-6 text-center">No sales data yet.</p>
               ) : (
-                <ResponsiveContainer width="100%" height={260}>
+                <ResponsiveContainer width="100%" height={280}>
                   <PieChart>
                     <Pie
                       data={salesByCustomer}
                       dataKey="amount"
                       nameKey="name"
                       cx="50%"
-                      cy="50%"
-                      outerRadius={90}
-                      label={({ name, percent }) =>
-                        (percent ?? 0) > 0.05 ? `${String(name).substring(0, 10)}` : ''
-                      }
+                      cy={PIE_CENTER_Y}
+                      innerRadius={PIE_INNER_RADIUS}
+                      outerRadius={PIE_OUTER_RADIUS}
+                      paddingAngle={1}
+                      label={renderPieValueLabel}
                       labelLine={false}
                     >
                       {salesByCustomer.map((_, i) => (
                         <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip formatter={(v) => formatPHP(Number(v))} />
-                    <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                    <Tooltip
+                      formatter={(v) => formatPHP(Number(v))}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      itemStyle={TOOLTIP_ITEM_STYLE}
+                    />
+                    <Legend iconSize={LEGEND_ICON_SIZE} wrapperStyle={LEGEND_STYLE} />
                   </PieChart>
                 </ResponsiveContainer>
               )}
@@ -371,26 +393,31 @@ export function ReportsPage() {
               {salesBySaleType.length === 0 ? (
                 <p className="text-sm text-gray-400 py-6 text-center">No sales data yet.</p>
               ) : (
-                <ResponsiveContainer width="100%" height={260}>
+                <ResponsiveContainer width="100%" height={280}>
                   <PieChart>
                     <Pie
                       data={salesBySaleType}
                       dataKey="amount"
                       nameKey="name"
                       cx="50%"
-                      cy="50%"
-                      outerRadius={90}
-                      label={({ name, percent }) =>
-                        (percent ?? 0) > 0.05 ? `${String(name).substring(0, 14)}` : ''
-                      }
+                      cy={PIE_CENTER_Y}
+                      innerRadius={PIE_INNER_RADIUS}
+                      outerRadius={PIE_OUTER_RADIUS}
+                      paddingAngle={1}
+                      label={renderPieValueLabel}
                       labelLine={false}
                     >
                       {salesBySaleType.map((_, i) => (
                         <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip formatter={(v) => formatPHP(Number(v))} />
-                    <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                    <Tooltip
+                      formatter={(v) => formatPHP(Number(v))}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      itemStyle={TOOLTIP_ITEM_STYLE}
+                    />
+                    <Legend iconSize={LEGEND_ICON_SIZE} wrapperStyle={LEGEND_STYLE} />
                   </PieChart>
                 </ResponsiveContainer>
               )}
@@ -401,8 +428,8 @@ export function ReportsPage() {
           <SectionCard title="Outstanding Invoices — Aging Report">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
               {[
-                { label: 'Current (not overdue)', value: agingBuckets.current, color: 'text-green-700', bg: 'bg-green-50' },
-                { label: '1–30 days overdue', value: agingBuckets.days30, color: 'text-yellow-700', bg: 'bg-yellow-50' },
+                { label: 'Current (not overdue)', value: agingBuckets.current, color: 'text-leaf-700', bg: 'bg-leaf-50' },
+                { label: '1–30 days overdue', value: agingBuckets.days30, color: 'text-gold-700', bg: 'bg-gold-50' },
                 { label: '31–60 days overdue', value: agingBuckets.days60, color: 'text-orange-600', bg: 'bg-orange-50' },
                 { label: 'Over 60 days', value: agingBuckets.over60, color: 'text-red-700', bg: 'bg-red-50' },
               ].map(({ label, value, color, bg }) => (
@@ -419,15 +446,15 @@ export function ReportsPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-gray-200 bg-gray-50">
+                    <tr className="border-b border-gray-200 bg-primary-50">
                       {['Date', 'Invoice #', 'Customer', 'Amount', 'Days Overdue', 'Status'].map((h) => (
-                        <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">{h}</th>
+                        <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-primary-800 uppercase tracking-wider">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {unpaidSales.map((s) => (
-                      <tr key={s.id} className="hover:bg-gray-50">
+                      <tr key={s.id} className="hover:bg-primary-50/50">
                         <td className="px-3 py-2.5 text-gray-600">{formatDate(s.date)}</td>
                         <td className="px-3 py-2.5 text-gray-600">{s.invoiceNumber || '—'}</td>
                         <td className="px-3 py-2.5 font-medium text-gray-900">{s.customerName}</td>
@@ -466,26 +493,26 @@ export function ReportsPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-gray-200 bg-gray-50">
+                    <tr className="border-b border-gray-200 bg-primary-50">
                       {['Product', 'Cost (₱)', 'Sell Price (₱)', 'Margin (₱)', 'Margin %'].map((h) => (
-                        <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">{h}</th>
+                        <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-primary-800 uppercase tracking-wider">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {productMargins.map((p) => (
-                      <tr key={p.id} className="hover:bg-gray-50">
+                      <tr key={p.id} className="hover:bg-primary-50/50">
                         <td className="px-4 py-2.5 font-medium text-gray-900">{p.name}</td>
                         <td className="px-4 py-2.5 text-gray-600">{formatPHP(p.costPHP)}</td>
                         <td className="px-4 py-2.5 text-gray-600">{formatPHP(p.sellingPricePHP)}</td>
-                        <td className={`px-4 py-2.5 font-medium ${p.marginPHP >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+                        <td className={`px-4 py-2.5 font-medium ${p.marginPHP >= 0 ? 'text-leaf-700' : 'text-red-600'}`}>
                           {formatPHP(p.marginPHP)}
                         </td>
                         <td className="px-4 py-2.5">
                           <div className="flex items-center gap-2">
                             <div className="w-20 bg-gray-100 rounded-full h-1.5">
                               <div
-                                className={`h-1.5 rounded-full ${p.marginPct >= 30 ? 'bg-green-500' : p.marginPct >= 10 ? 'bg-yellow-400' : 'bg-red-400'}`}
+                                className={`h-1.5 rounded-full ${p.marginPct >= 30 ? 'bg-leaf-500' : p.marginPct >= 10 ? 'bg-gold-400' : 'bg-red-400'}`}
                                 style={{ width: `${Math.min(100, Math.max(0, p.marginPct))}%` }}
                               />
                             </div>
@@ -519,19 +546,19 @@ export function ReportsPage() {
                     const monthsToBreakEven = netProfit < 0 ? Math.abs(netProfit / Math.max(1, avgRevenue - avgCost)) : 0;
                     return (
                       <>
-                        <div className="bg-blue-50 rounded-xl p-4">
+                        <div className="bg-leaf-50 rounded-xl p-4">
                           <p className="text-xs text-gray-500">Avg Monthly Revenue</p>
-                          <p className="text-lg font-bold text-blue-700 mt-1">{formatPHP(avgRevenue)}</p>
+                          <p className="text-lg font-bold text-leaf-700 mt-1">{formatPHP(avgRevenue)}</p>
                         </div>
                         <div className="bg-red-50 rounded-xl p-4">
                           <p className="text-xs text-gray-500">Avg Monthly Costs</p>
                           <p className="text-lg font-bold text-red-700 mt-1">{formatPHP(avgCost)}</p>
                         </div>
-                        <div className={`rounded-xl p-4 ${netProfit >= 0 ? 'bg-green-50' : 'bg-orange-50'}`}>
+                        <div className={`rounded-xl p-4 ${netProfit >= 0 ? 'bg-leaf-50' : 'bg-orange-50'}`}>
                           <p className="text-xs text-gray-500">
                             {netProfit >= 0 ? 'Currently Profitable ✓' : 'Months to Break Even'}
                           </p>
-                          <p className={`text-lg font-bold mt-1 ${netProfit >= 0 ? 'text-green-700' : 'text-orange-600'}`}>
+                          <p className={`text-lg font-bold mt-1 ${netProfit >= 0 ? 'text-leaf-700' : 'text-orange-600'}`}>
                             {netProfit >= 0 ? formatPHP(netProfit) : `~${monthsToBreakEven.toFixed(1)} months`}
                           </p>
                         </div>
@@ -541,13 +568,19 @@ export function ReportsPage() {
                 </div>
                 <ResponsiveContainer width="100%" height={220}>
                   <LineChart data={monthlyPnL} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `₱${(v / 1000).toFixed(0)}k`} />
-                    <Tooltip formatter={(v) => formatPHP(Number(v))} />
-                    <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-                    <Line type="monotone" dataKey="revenue" name="Revenue" stroke="#16a34a" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="profit" name="Profit" stroke="#3b82f6" strokeWidth={2} dot={false} strokeDasharray="4 2" />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+                    <XAxis dataKey="month" tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} />
+                    <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={52} tickFormatter={(v) => `₱${(v / 1000).toFixed(0)}k`} />
+                    <Tooltip
+                      formatter={(v) => formatPHP(Number(v))}
+                      cursor={{ stroke: '#dcbcd6', strokeWidth: 1 }}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      itemStyle={TOOLTIP_ITEM_STYLE}
+                    />
+                    <Legend iconSize={LEGEND_ICON_SIZE} wrapperStyle={LEGEND_STYLE} />
+                    <Line type="monotone" dataKey="revenue" name="Revenue" stroke={CHART_REVENUE} strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="profit" name="Profit" stroke={CHART_PROFIT} strokeWidth={2} dot={false} strokeDasharray="4 2" />
                   </LineChart>
                 </ResponsiveContainer>
               </>

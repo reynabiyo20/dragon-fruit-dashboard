@@ -22,7 +22,7 @@ export function InputField({ label, error, hint, required, className = '', ...re
       <input
         {...rest}
         className={[
-          'px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition',
+          'px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition',
           error ? 'border-red-400 bg-red-50' : 'border-gray-300 bg-white',
           'disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed',
           className,
@@ -50,7 +50,7 @@ export function SelectField({ label, error, hint, required, options, placeholder
       <select
         {...rest}
         className={[
-          'px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition bg-white',
+          'px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition bg-white',
           error ? 'border-red-400 bg-red-50' : 'border-gray-300',
           'disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed',
           className,
@@ -81,7 +81,7 @@ export function TextareaField({ label, error, hint, required, className = '', ..
         rows={3}
         {...rest}
         className={[
-          'px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition resize-y',
+          'px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition resize-y',
           error ? 'border-red-400 bg-red-50' : 'border-gray-300 bg-white',
           'disabled:bg-gray-50 disabled:text-gray-400',
           className,
@@ -110,7 +110,7 @@ export function CheckboxField({ label, checked, onChange, hint }: CheckboxFieldP
         id={label}
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
+        className="mt-0.5 w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
       />
       <div>
         <label htmlFor={label} className="text-sm font-medium text-gray-700 cursor-pointer">{label}</label>
@@ -132,7 +132,7 @@ export function DisplayField({ label, value, highlight = false }: DisplayFieldPr
   return (
     <div className="flex flex-col gap-1">
       <label className="text-sm font-medium text-gray-500">{label}</label>
-      <div className={`px-3 py-2 text-sm border rounded-lg bg-gray-50 ${highlight ? 'font-semibold text-green-700 border-green-200' : 'text-gray-700 border-gray-200'}`}>
+      <div className={`px-3 py-2 text-sm border rounded-lg bg-gray-50 ${highlight ? 'font-semibold text-primary-700 border-primary-200' : 'text-gray-700 border-gray-200'}`}>
         {value}
       </div>
     </div>

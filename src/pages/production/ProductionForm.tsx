@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import type { ProductionEntry } from '../../types';
 import { useProductionStore } from '../../store/productionStore';
 import { useFarmStore } from '../../store/farmStore';
+import { useEmployeeStore } from '../../store/employeeStore';
 import { InputField, SelectField, TextareaField, DisplayField } from '../../components/forms/FormField';
 import { Button } from '../../components/ui/Button';
 import { todayISO, estimateHarvestWindow } from '../../utils/date';
@@ -13,6 +14,7 @@ import { formatDate } from '../../utils/format';
 const schema = z.object({
   date: z.string().min(1, 'Date is required'),
   farmBlock: z.string(),
+  harvestedById: z.string(),
   plants: z.coerce.number().min(0),
   floweringDate: z.string(),
   fruitsHarvested: z.coerce.number().min(0),
@@ -28,8 +30,14 @@ interface ProductionFormProps { entry: ProductionEntry | null; onClose: () => vo
 export function ProductionForm({ entry, onClose }: ProductionFormProps) {
   const { addEntry, updateEntry } = useProductionStore();
   const { sections } = useFarmStore();
+  const { activeEmployees } = useEmployeeStore();
   const blockOptions = sections
     .map((s) => ({ value: s.sectionType, label: `${s.sectionType}${s.plantSubcategory ? ` – ${s.plantSubcategory}` : ''} (PIC: ${s.pic})` }))
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+  // Harvester options — active employees, so output can be attributed per worker.
+  const harvesters = activeEmployees();
+  const harvesterOptions = harvesters
+    .map((e) => ({ value: e.id, label: e.position ? `${e.name} — ${e.position}` : e.name }))
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
 
   const { register, handleSubmit, control, formState: { errors, isSubmitting } } = useForm<FormValues>({
@@ -37,6 +45,7 @@ export function ProductionForm({ entry, onClose }: ProductionFormProps) {
     defaultValues: {
       date: entry?.date ?? todayISO(),
       farmBlock: entry?.farmBlock ?? '',
+      harvestedById: entry?.harvestedById ?? '',
       plants: entry?.plants ?? 0,
       floweringDate: entry?.floweringDate ?? '',
       fruitsHarvested: entry?.fruitsHarvested ?? 0,
@@ -54,8 +63,11 @@ export function ProductionForm({ entry, onClose }: ProductionFormProps) {
   const harvestWindow = estimateHarvestWindow(floweringDate);
 
   const onSubmit = (data: FormValues) => {
-    if (entry) { updateEntry(entry.id, data); toast.success('Entry updated'); }
-    else { addEntry(data); toast.success('Harvest logged'); }
+    // Snapshot the harvester's name so later employee edits don't rewrite history.
+    const harvester = harvesters.find((e) => e.id === data.harvestedById);
+    const payload = { ...data, harvestedByName: harvester?.name ?? '' };
+    if (entry) { updateEntry(entry.id, payload); toast.success('Entry updated'); }
+    else { addEntry(payload); toast.success('Harvest logged'); }
     onClose();
   };
 
@@ -65,7 +77,10 @@ export function ProductionForm({ entry, onClose }: ProductionFormProps) {
         <InputField label="Date" type="date" required error={errors.date?.message} {...register('date')} />
         <SelectField label="Farm Block" options={blockOptions} placeholder="Select block…" {...register('farmBlock')} />
       </div>
-      <InputField label="Number of Plants" type="number" step="1" error={errors.plants?.message} {...register('plants')} />
+      <div className="grid grid-cols-2 gap-4">
+        <SelectField label="Harvested By" options={harvesterOptions} placeholder="Unassigned" {...register('harvestedById')} />
+        <InputField label="Number of Plants" type="number" step="1" error={errors.plants?.message} {...register('plants')} />
+      </div>
 
       <div className="grid grid-cols-2 gap-4">
         <InputField
@@ -75,7 +90,7 @@ export function ProductionForm({ entry, onClose }: ProductionFormProps) {
           error={errors.floweringDate?.message}
           {...register('floweringDate')}
         />
-        <div className="p-3 bg-amber-50 rounded-lg border border-amber-100">
+        <div className="p-3 bg-gold-50 rounded-lg border border-gold-100">
           <DisplayField
             label="Est. Harvest Window"
             value={harvestWindow ? `${harvestWindow.label} (${formatDate(harvestWindow.date)})` : 'Set flowering date'}

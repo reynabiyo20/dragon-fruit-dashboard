@@ -107,7 +107,7 @@ export function PayslipModal({ employeeName, entries, onClose }: PayslipModalPro
                       type="checkbox"
                       checked={selected.has(e.id)}
                       onChange={() => toggle(e.id)}
-                      className="w-3.5 h-3.5 text-green-600 border-gray-300 rounded focus:ring-green-500"
+                      className="w-3.5 h-3.5 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
                     />
                     {formatPayPeriod(e.payPeriodStart, e.payPeriodEnd)} · {formatPHP(e.netPay)}
                   </label>
@@ -173,14 +173,14 @@ export function PayslipModal({ employeeName, entries, onClose }: PayslipModalPro
                   <td className="py-2 pr-2 text-right text-gray-700">{totals.commission > 0 ? formatPHP(totals.commission) : '—'}</td>
                   <td className="py-2 pr-2 text-right text-gray-700">{totals.bonus > 0 ? formatPHP(totals.bonus) : '—'}</td>
                   <td className="py-2 pr-2 text-right text-gray-700">{totals.deductions > 0 ? formatPHP(totals.deductions) : '—'}</td>
-                  <td className="py-2 text-right text-green-700">{formatPHP(totals.net)}</td>
+                  <td className="py-2 text-right text-leaf-700">{formatPHP(totals.net)}</td>
                 </tr>
               </tfoot>
             </table>
 
-            <div className="flex justify-between items-center bg-green-50 rounded-lg px-4 py-3">
+            <div className="flex justify-between items-center bg-leaf-50 rounded-lg px-4 py-3">
               <span className="text-sm font-medium text-gray-700">Total Net Pay</span>
-              <span className="text-xl font-bold text-green-700">{formatPHP(totals.net)}</span>
+              <span className="text-xl font-bold text-leaf-700">{formatPHP(totals.net)}</span>
             </div>
 
             <div className="mt-6 grid grid-cols-2 gap-8 text-xs text-gray-500">
