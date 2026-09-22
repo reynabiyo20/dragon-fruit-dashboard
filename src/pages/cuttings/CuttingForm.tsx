@@ -11,10 +11,10 @@ import { Button } from '../../components/ui/Button';
 import { formatPHP, formatDate } from '../../utils/format';
 import { todayISO } from '../../utils/date';
 import { useProductCategoryStore } from '../../store/productCategoryStore';
+import { syncTaxonomy } from '../../store/taxonomySync';
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import {
   CUTTINGS_PRODUCT_TYPE,
-  CUTTING_SOURCE_COST,
   CUTTING_ROOT_WEEKS_MIN,
   CUTTING_ROOT_WEEKS_DEFAULT,
   CUTTING_ROOT_WEEKS_MAX,
@@ -24,16 +24,16 @@ import {
   CUTTING_CALLUSING_DAYS,
   cuttingReadyWeeks,
 } from '../../constants';
+import { ENTITY, toastSuccess, VALIDATION, requiredMsg, FIELD } from '../../constants/messages';
 
 const schema = z.object({
-  subcategory: z.string().min(1, 'Variety is required'),
-  cuttingType: z.string().min(1, 'Cutting type is required'),
+  subcategory: z.string().min(1, VALIDATION.varietyRequired),
+  cuttingType: z.string().min(1, requiredMsg('Cutting type')),
   // For internal batches this holds the HARVEST date (planting is derived);
   // for customer records it's the acquisition/purchase date entered directly.
-  dateSourced: z.string().min(1, 'Date is required'),
+  dateSourced: z.string().min(1, VALIDATION.dateRequired),
   dateGrafted: z.string(),
   quantitySourced: z.coerce.number().int().min(1, 'Must source at least 1 cutting'),
-  quantitySold: z.coerce.number().int().min(0),
   sourceCostPerCutting: z.coerce.number().min(0),
   graftCostPerCutting: z.coerce.number().min(0),
   rootWeeks: z.coerce
@@ -41,9 +41,6 @@ const schema = z.object({
     .min(CUTTING_ROOT_WEEKS_MIN, `Rooting takes at least ${CUTTING_ROOT_WEEKS_MIN} weeks`)
     .max(CUTTING_ROOT_WEEKS_MAX, `Rooting takes at most ${CUTTING_ROOT_WEEKS_MAX} weeks`),
   notes: z.string(),
-}).refine((d) => d.quantitySold <= d.quantitySourced, {
-  path: ['quantitySold'],
-  message: 'Sold cannot exceed sourced',
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -67,7 +64,6 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
   // Select the raw entries (stable ref) and derive the list — calling a store
   // method in the selector returns a new array each render → infinite loop.
   const categoryEntries = useProductCategoryStore((s) => s.entries);
-  const addCategoryEntry = useProductCategoryStore((s) => s.addEntry);
   const varietyOptions = useMemo(() => {
     const subs = categoryEntries
       .filter((e) => e.category === CUTTINGS_PRODUCT_TYPE && e.subcategory !== '')
@@ -88,14 +84,14 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
 
   const { register, handleSubmit, control, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
+    mode: 'onTouched',
     defaultValues: {
       subcategory: batch?.subcategory ?? '',
       cuttingType: batch?.cuttingType ?? CUTTING_TYPE_GRAFTED,
       dateSourced: initialPrimaryDate,
       dateGrafted: batch?.dateGrafted ?? '',
       quantitySourced: batch?.quantitySourced ?? 0,
-      quantitySold: batch?.quantitySold ?? 0,
-      sourceCostPerCutting: batch?.sourceCostPerCutting ?? CUTTING_SOURCE_COST,
+      sourceCostPerCutting: batch?.sourceCostPerCutting ?? 0,
       graftCostPerCutting: batch?.graftCostPerCutting ?? 0,
       rootWeeks: batch?.rootWeeks ?? CUTTING_ROOT_WEEKS_DEFAULT,
       notes: batch?.notes ?? '',
@@ -153,7 +149,9 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
     const alreadyExists = varietyOptions.some(
       (o) => o.value.trim().toLowerCase() === name.toLowerCase(),
     );
-    addCategoryEntry(CUTTINGS_PRODUCT_TYPE, name);
+    // Write through to BOTH the product and expense taxonomies so the new
+    // variety shows up everywhere (Products, Sales, Expenses) and in Settings.
+    syncTaxonomy(CUTTINGS_PRODUCT_TYPE, name);
     if (!alreadyExists) {
       toast.success(`Added new cutting variety "${name}"`, { icon: '🌱', duration: 4000 });
     }
@@ -168,12 +166,12 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
         ? { ...data, harvestDate: data.dateSourced }
         : data;
       updateBatch(batch.id, patch);
-      toast.success('Batch updated');
+      toast.success(toastSuccess(ENTITY.batch, 'updated'));
     } else {
       // Manually created batches are our own nursery propagation. The primary
       // date input is the harvest date; the store derives the planting date.
       addBatch({ ...data, source: CUTTING_SOURCE_INTERNAL, harvestDate: data.dateSourced });
-      toast.success('Batch added');
+      toast.success(toastSuccess(ENTITY.batch, 'created'));
     }
     onClose();
   };
@@ -182,13 +180,13 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <CreatableSelect
-          label="Variety"
+          label={FIELD.variety.label}
           required
           value={watch('subcategory')}
           options={varietyOptions}
           onChange={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
           onCreate={handleCreateVariety}
-          placeholder="Select variety…"
+          placeholder={FIELD.variety.placeholder}
           error={errors.subcategory?.message}
           createLabel="+ Create new variety…"
           newFieldLabel="New Variety"
@@ -232,7 +230,7 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
         <InputField
           label="Date Grafted / Planted"
           type="date"
-          hint="Leave blank if not grafted yet — sets the rooting clock"
+          hint="Sets the rooting clock. For purchased cuttings already advanced, backdate this to reflect their real progress. Leave blank if not grafted yet."
           error={errors.dateGrafted?.message}
           {...register('dateGrafted')}
         />
@@ -260,7 +258,7 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
           label="Source Cost / Cutting (₱)"
           type="number"
           step="0.01"
-          hint={`Default ₱${CUTTING_SOURCE_COST} from the friend`}
+          hint="Optional — own-farm harvest is usually 0; set only if the cuttings were bought"
           error={errors.sourceCostPerCutting?.message}
           {...register('sourceCostPerCutting')}
         />
@@ -274,15 +272,7 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
         />
       </div>
 
-      {batch && (
-        <InputField
-          label="Quantity Sold / Left the Batch"
-          type="number"
-          hint="How many cuttings have been sold (recorded in Sales) or otherwise left this batch"
-          error={errors.quantitySold?.message}
-          {...register('quantitySold')}
-        />
-      )}
+
 
       {/* Auto-calculated preview */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-3 bg-primary-50 rounded-lg border border-primary-100">
@@ -303,7 +293,7 @@ export function CuttingForm({ batch, onClose }: CuttingFormProps) {
         />
       </div>
 
-      <TextareaField label="Notes" rows={2} {...register('notes')} />
+      <TextareaField label={FIELD.notes.label} rows={2} {...register('notes')} />
 
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" type="button" onClick={onClose}>Cancel</Button>

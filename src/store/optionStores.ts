@@ -1,7 +1,7 @@
 import { createOptionListStore } from './optionListStore';
 import {
   SALE_TYPES, INVENTORY_CATEGORIES, UNIT_VALUES, EMPLOYEE_TYPES, EMPLOYEE_POSITIONS,
-  DRAGON_FRUIT_VARIETIES, ACCOUNTING_CLASSIFICATIONS, EXPENSE_TYPES,
+  DRAGON_FRUIT_VARIETIES, ACCOUNTING_CLASSIFICATIONS, EXPENSE_TYPES, LABOR_TYPES,
 } from '../constants';
 import { useSaleStore } from './saleStore';
 import { useProductStore } from './productStore';
@@ -100,7 +100,21 @@ export const useEmployeePositionStore = createOptionListStore(
   },
 );
 
-/** Rename cascade: expenses store their accounting classification. */
+/** Rename cascade: employees store their labor type (Direct/Indirect/…). */
+export const useLaborTypeStore = createOptionListStore(
+  'dfd-labor-types',
+  LABOR_TYPES,
+  (from, to) => {
+    const { employees, updateEmployee } = useEmployeeStore.getState();
+    employees.filter((e) => sameOption(e.laborType ?? '', from)).forEach((e) => updateEmployee(e.id, { laborType: to }));
+  },
+);
+
+/**
+ * Rename cascade: accounting classification is shared by BOTH expenses and
+ * employees (labor bookkeeping), so a rename must update both stores to keep the
+ * whole app in sync with the Settings list.
+ */
 export const useAccountingClassificationStore = createOptionListStore(
   'dfd-accounting-classifications',
   ACCOUNTING_CLASSIFICATIONS,
@@ -109,6 +123,10 @@ export const useAccountingClassificationStore = createOptionListStore(
     expenses
       .filter((e) => sameOption(e.accountingClassification ?? '', from))
       .forEach((e) => updateExpense(e.id, { accountingClassification: to }));
+    const { employees, updateEmployee } = useEmployeeStore.getState();
+    employees
+      .filter((e) => sameOption(e.accountingClassification ?? '', from))
+      .forEach((e) => updateEmployee(e.id, { accountingClassification: to }));
   },
 );
 

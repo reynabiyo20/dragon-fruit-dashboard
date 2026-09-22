@@ -2,8 +2,8 @@ import { NavLink, Link } from 'react-router-dom';
 import {
   LayoutDashboard, ShoppingCart, Receipt, Users, Truck,
   Package, Sprout, Banknote, UserCheck, Factory, TreePine,
-  Settings, SlidersHorizontal, ChevronLeft, ChevronRight, BarChart2, Percent, LineChart, Scissors,
-  TrendingUp,
+  Settings, SlidersHorizontal, ChevronLeft, ChevronRight, Percent, LineChart, Scissors,
+  TrendingUp, Workflow,
 } from 'lucide-react';
 import { useState } from 'react';
 import logo from '../../assets/logo.jpg';
@@ -13,27 +13,29 @@ interface NavItem {
   label: string;
   icon: React.ElementType;
   end?: boolean;
+  /** Short hover tooltip describing what the page/store is for. */
+  description: string;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { to: '/',                    label: 'Dashboard',          icon: LayoutDashboard, end: true },
-  { to: '/reports',             label: 'Reports',            icon: BarChart2 },
-  { to: '/price-history',       label: 'Price History',      icon: LineChart },
-  { to: '/sales',               label: 'Sales',              icon: ShoppingCart },
-  { to: '/expenses',            label: 'Expenses',           icon: Receipt },
-  { to: '/payroll',             label: 'Payroll',            icon: Banknote },
-  { to: '/commissions',         label: 'Commissions',        icon: Percent },
-  { to: '/customers',           label: 'Customers',          icon: Users },
-  { to: '/vendors',             label: 'Vendors',            icon: Truck },
-  { to: '/products',            label: 'Products',           icon: Package },
-  { to: '/inventory',           label: 'Inventory',          icon: Sprout },
-  { to: '/cuttings',            label: 'Cuttings',           icon: Scissors },
-  { to: '/wholesale-forecast',  label: 'Dragon Fruit Supply Forecast', icon: TrendingUp },
-  { to: '/employees',           label: 'Employees',          icon: UserCheck },
-  { to: '/production',          label: 'Dragon Fruit Production', icon: Factory },
-  { to: '/farm',                label: 'Farm Info',          icon: TreePine },
-  { to: '/business',            label: 'Business Info',      icon: Settings },
-  { to: '/settings',            label: 'Settings',           icon: SlidersHorizontal },
+  { to: '/',                    label: 'Dashboard & Reports', icon: LayoutDashboard, end: true, description: 'At-a-glance metrics, analytics, and the monthly P&L summary.' },
+  { to: '/price-history',       label: 'Price History',      icon: LineChart,       description: 'Track how product prices have changed over time.' },
+  { to: '/sales',               label: 'Sales',              icon: ShoppingCart,    description: 'Record and review sales orders to customers.' },
+  { to: '/expenses',            label: 'Expenses',           icon: Receipt,         description: 'Log business costs and purchases from vendors.' },
+  { to: '/payroll',             label: 'Payroll',            icon: Banknote,        description: 'Run and review employee wage payments per period.' },
+  { to: '/commissions',         label: 'Commissions',        icon: Percent,         description: 'Track commissions earned by employees on sales.' },
+  { to: '/employees',           label: 'Employees',          icon: UserCheck,       description: 'Manage staff records, pay rates, and active status.' },
+  { to: '/customers',           label: 'Customers',          icon: Users,           description: 'Manage customer contacts and farm-partner details.' },
+  { to: '/vendors',             label: 'Vendors',            icon: Truck,           description: 'Manage suppliers and what products they provide.' },
+  { to: '/products',            label: 'Products',           icon: Package,         description: 'Define products with pricing, cost, and margin.' },
+  { to: '/inventory',           label: 'Inventory',          icon: Sprout,          description: 'Track stock levels and value of items on hand.' },
+  { to: '/cuttings',            label: 'Propagation',        icon: Scissors,        description: 'Grow cutting batches from source to rooted & ready.' },
+  { to: '/wholesale-forecast',  label: 'Dragon Fruit Supply Forecast', icon: TrendingUp, description: 'Project upcoming dragon fruit supply windows.' },
+  { to: '/production',          label: 'Farm Production',    icon: Factory,         description: 'Record farm harvest and production output.' },
+  { to: '/farm',                label: 'Farm Info',          icon: TreePine,        description: 'View and edit farm plots and growing details.' },
+  { to: '/business',            label: 'Business Info',      icon: Settings,        description: 'Edit core business details used across the app.' },
+  { to: '/process-flows',       label: 'Process Flows',      icon: Workflow,        description: 'How each store works and how it affects the others.' },
+  { to: '/settings',            label: 'Settings',           icon: SlidersHorizontal, description: 'Configure app preferences and manage data.' },
 ];
 
 export function Sidebar() {
@@ -69,7 +71,7 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto scrollbar-thin py-3 px-2">
-        {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
+        {NAV_ITEMS.map(({ to, label, icon: Icon, end, description }) => (
           <NavLink
             key={to}
             to={to}
@@ -81,7 +83,7 @@ export function Sidebar() {
                 ? 'bg-primary-700 text-white shadow-sm'
                 : 'text-primary-800/70 hover:bg-primary-100 hover:text-primary-900',
             ].join(' ')}
-            title={collapsed ? label : undefined}
+            title={collapsed ? `${label} — ${description}` : description}
           >
             <Icon className="w-4 h-4 flex-shrink-0" />
             {!collapsed && <span className="truncate">{label}</span>}

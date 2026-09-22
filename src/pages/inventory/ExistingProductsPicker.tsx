@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { useProductStore } from '../../store/productStore';
 import { useInventoryStore } from '../../store/inventoryStore';
-import { formatNumber, categoryLabel } from '../../utils/format';
+import { formatQty, categoryLabel } from '../../utils/format';
 
 /** How a checked product's quantity is applied to its inventory row. */
 export type QtyMode = 'add' | 'set';
@@ -65,15 +65,7 @@ export function ExistingProductsPicker({ selections, onChange }: ExistingProduct
     } else {
       const p = products.find((x) => x.id === productId);
       if (!p) return;
-      next[productId] = {
-        productId,
-        category: p.category,
-        subcategory: p.subcategory,
-        unit: p.unit || 'piece',
-        unitCost: p.costPHP ?? 0,
-        beginningQty: 0,
-        mode: 'add',
-      };
+      next[productId] = makeSelection(p);
     }
     onChange(next);
   };
@@ -84,7 +76,35 @@ export function ExistingProductsPicker({ selections, onChange }: ExistingProduct
     onChange({ ...selections, [productId]: { ...current, ...p } });
   };
 
+  /** Build a fresh selection entry for a product (default add / qty 0). */
+  const makeSelection = (p: (typeof products)[number]): ExistingSelection => ({
+    productId: p.id,
+    category: p.category,
+    subcategory: p.subcategory,
+    unit: p.unit || 'piece',
+    unitCost: p.costPHP ?? 0,
+    beginningQty: 0,
+    mode: 'add',
+  });
+
   const selectedCount = Object.keys(selections).length;
+
+  // Select-all is scoped to the CURRENTLY FILTERED view, so a user can narrow by
+  // search/category and add just that set in one click. It's "checked" when every
+  // filtered product is already selected; clicking then clears that filtered set.
+  const allFilteredSelected = filtered.length > 0 && filtered.every((p) => !!selections[p.id]);
+  const someFilteredSelected = filtered.some((p) => !!selections[p.id]);
+  const toggleAllFiltered = () => {
+    const next = { ...selections };
+    if (allFilteredSelected) {
+      // Deselect every product in the current filtered view.
+      filtered.forEach((p) => { delete next[p.id]; });
+    } else {
+      // Select every filtered product not already picked (keeps existing edits).
+      filtered.forEach((p) => { if (!next[p.id]) next[p.id] = makeSelection(p); });
+    }
+    onChange(next);
+  };
 
   return (
     <div className="space-y-3">
@@ -123,8 +143,24 @@ export function ExistingProductsPicker({ selections, onChange }: ExistingProduct
         </select>
       </div>
 
-      {selectedCount > 0 && (
-        <p className="text-xs text-primary-700 font-medium">{selectedCount} product{selectedCount === 1 ? '' : 's'} selected</p>
+      {/* Select-all (of the filtered view) + selected count */}
+      {filtered.length > 0 && (
+        <div className="flex items-center justify-between gap-2">
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-gray-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={allFilteredSelected}
+              ref={(el) => { if (el) el.indeterminate = !allFilteredSelected && someFilteredSelected; }}
+              onChange={toggleAllFiltered}
+              className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+            />
+            {allFilteredSelected ? 'Deselect all' : 'Select all'}
+            <span className="text-gray-400">({filtered.length}{category !== 'all' || query ? ' shown' : ''})</span>
+          </label>
+          {selectedCount > 0 && (
+            <span className="text-xs text-primary-700 font-medium">{selectedCount} selected</span>
+          )}
+        </div>
       )}
 
       {/* Product checklist */}
@@ -150,7 +186,7 @@ export function ExistingProductsPicker({ selections, onChange }: ExistingProduct
                   </span>
                   {existingRow ? (
                     <span className="text-xs text-gray-400 flex-shrink-0">
-                      in stock: {formatNumber(existingRow.endingQty, 0)} {existingRow.unit}
+                      in stock: {formatQty(existingRow.endingQty)} {existingRow.unit}
                     </span>
                   ) : (
                     <span className="text-xs text-gray-300 flex-shrink-0">not stocked</span>
@@ -209,6 +245,32 @@ export function ExistingProductsPicker({ selections, onChange }: ExistingProduct
                       <span className="col-span-2 text-xs text-gray-400 self-center">New inventory row</span>
                     )}
                   </div>
+                )}
+
+                {/* Effect summary — spells out exactly what saving this selection
+                    does to the row's beginning quantity (add vs set). Setting a
+                    stocked item to 0 wipes its beginning quantity, so it gets a
+                    bold amber warning instead of the quiet primary note. */}
+                {checked && sel && existingRow && sel.mode === 'set' && (Number(sel.beginningQty) || 0) === 0 && (
+                  <p className="mt-1.5 ml-6 text-xs text-gold-600">
+                    Are you sure? This sets the beginning quantity of "{p.subcategory}" to 0
+                    {existingRow.endingQty !== 0 && <> (currently {formatQty(existingRow.endingQty)} {existingRow.unit} on hand)</>}.
+                  </p>
+                )}
+                {/* Quantity 0 in the add-to / new-row case: nothing is actually
+                    stocked — warn that they're adding 0 to the beginning quantity
+                    so it isn't a silent no-op. (Set-to-0 is handled above.) */}
+                {checked && sel && (Number(sel.beginningQty) || 0) === 0 && !(existingRow && sel.mode === 'set') && (
+                  <p className="mt-1.5 ml-6 text-xs text-gold-600">
+                    You're adding 0 to the beginning quantity of "{p.subcategory}" — enter a quantity to actually stock it.
+                  </p>
+                )}
+                {checked && sel && (Number(sel.beginningQty) || 0) > 0 && (
+                  <p className="mt-1.5 ml-6 text-xs text-primary-700">
+                    {existingRow && sel.mode === 'set'
+                      ? <>You're setting the beginning quantity of <span className="font-semibold">{p.subcategory}</span> to <span className="font-semibold">{formatQty(sel.beginningQty)}</span> {sel.unit}.</>
+                      : <>You're adding <span className="font-semibold">{formatQty(sel.beginningQty)}</span> {sel.unit} to the beginning quantity of <span className="font-semibold">{p.subcategory}</span>.</>}
+                  </p>
                 )}
               </div>
             );

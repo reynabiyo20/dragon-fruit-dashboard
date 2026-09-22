@@ -57,8 +57,19 @@ export function WholesaleForecastPage() {
       sortValue: (w) => w.key,
     },
     {
+      key: 'farm',
+      header: 'Farm Plants Pool',
+      accessor: (w) => (
+        <div className="text-sm">
+          <span className="font-medium text-gold-700">{kg(w.farm.kg)}</span>
+          <p className="text-xs text-gray-400">{formatNumber(w.farm.pieces, 0)} pcs · {formatNumber(w.farm.cuttings, 0)} plants</p>
+        </div>
+      ),
+      sortValue: (w) => w.farm.kg,
+    },
+    {
       key: 'internal',
-      header: 'Internal Farm Pool',
+      header: 'Internal (Cuttings) Pool',
       accessor: (w) => (
         <div className="text-sm">
           <span className="font-medium text-leaf-700">{kg(w.internal.kg)}</span>
@@ -113,7 +124,7 @@ export function WholesaleForecastPage() {
             <div className="p-1.5 rounded-lg bg-leaf-50 flex-shrink-0"><Sprout className="w-4 h-4 text-leaf-600" /></div>
             <p>
               <span className="font-medium text-gray-800">Internal pool</span> counts batches marked
-              <span className="font-medium"> Planted</span> in the Cuttings Store.
+              <span className="font-medium"> Planted</span> in Propagation.
             </p>
           </div>
           <div className="flex items-start gap-2">
@@ -123,13 +134,21 @@ export function WholesaleForecastPage() {
               <span className="font-medium"> Delivered</span> in Sales.
             </p>
           </div>
+          <div className="flex items-start gap-2">
+            <div className="p-1.5 rounded-lg bg-gold-50 flex-shrink-0"><Sprout className="w-4 h-4 text-gold-600" /></div>
+            <p>
+              <span className="font-medium text-gray-800">Farm pool</span> counts standing plants recorded in
+              <span className="font-medium"> Farm Information</span>.
+            </p>
+          </div>
         </div>
       </SectionCard>
 
       {/* KPI summary */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 xl:grid-cols-5 gap-4">
         <StatCard title="Total Projected Supply" value={kg(totals.totalKg)} subtitle={`${formatNumber(totals.totalPieces, 0)} fruits across ${windows.length} window(s)`} icon={Scale} iconColor="text-primary-700" iconBg="bg-primary-50" />
-        <StatCard title="Internal Farm Pool" value={kg(totals.internalKg)} subtitle="From planted batches" icon={Sprout} iconColor="text-leaf-600" iconBg="bg-leaf-50" />
+        <StatCard title="Farm Plants Pool" value={kg(totals.farmKg)} subtitle="From standing plants" icon={Sprout} iconColor="text-gold-600" iconBg="bg-gold-50" />
+        <StatCard title="Internal (Cuttings) Pool" value={kg(totals.internalKg)} subtitle="From planted batches" icon={Sprout} iconColor="text-leaf-600" iconBg="bg-leaf-50" />
         <StatCard title="Farm Partner Pool" value={kg(totals.partnerKg)} subtitle="From delivered cuttings" icon={Handshake} iconColor="text-berry-600" iconBg="bg-berry-50" />
         <StatCard
           title="Next Harvest Window"
@@ -149,7 +168,7 @@ export function WholesaleForecastPage() {
           action={
             <Link to="/cuttings">
               <span className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700">
-                <Sprout className="w-4 h-4" /> Go to Cuttings Store
+                <Sprout className="w-4 h-4" /> Go to Propagation
               </span>
             </Link>
           }
@@ -171,12 +190,17 @@ export function WholesaleForecastPage() {
               <AreaChart
                 data={filteredWindows.map((w) => ({
                   label: w.label,
+                  farm: Number(w.farm.kg.toFixed(1)),
                   internal: Number(w.internal.kg.toFixed(1)),
                   partner: Number(w.partner.kg.toFixed(1)),
                 }))}
                 margin={{ top: 5, right: 10, left: 0, bottom: 0 }}
               >
                 <defs>
+                  <linearGradient id="farmGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={BRAND.gold} stopOpacity={0.35} />
+                    <stop offset="95%" stopColor={BRAND.gold} stopOpacity={0.05} />
+                  </linearGradient>
                   <linearGradient id="internalGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor={BRAND.leaf} stopOpacity={0.35} />
                     <stop offset="95%" stopColor={BRAND.leaf} stopOpacity={0.05} />
@@ -190,14 +214,15 @@ export function WholesaleForecastPage() {
                 <XAxis dataKey="label" tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} interval={0} angle={-15} textAnchor="end" height={50} />
                 <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={52} tickFormatter={(v) => `${v}kg`} />
                 <Tooltip
-                  formatter={(v, name) => [`${formatNumber(Number(v), 1)} kg`, name === 'internal' ? 'Internal' : 'Partner']}
+                  formatter={(v, name) => [`${formatNumber(Number(v), 1)} kg`, name === 'farm' ? 'Farm plants' : name === 'internal' ? 'Internal' : 'Partner']}
                   cursor={{ stroke: '#dcbcd6', strokeWidth: 1 }}
                   contentStyle={TOOLTIP_CONTENT_STYLE}
                   labelStyle={TOOLTIP_LABEL_STYLE}
                   itemStyle={TOOLTIP_ITEM_STYLE}
                 />
                 <Legend iconSize={LEGEND_ICON_SIZE} wrapperStyle={LEGEND_STYLE} />
-                <Area type="monotone" dataKey="internal" name="Internal Farm Pool" stackId="1" stroke={BRAND.leaf} strokeWidth={2} fill="url(#internalGrad)" />
+                <Area type="monotone" dataKey="farm" name="Farm Plants Pool" stackId="1" stroke={BRAND.gold} strokeWidth={2} fill="url(#farmGrad)" />
+                <Area type="monotone" dataKey="internal" name="Internal (Cuttings) Pool" stackId="1" stroke={BRAND.leaf} strokeWidth={2} fill="url(#internalGrad)" />
                 <Area type="monotone" dataKey="partner" name="Farm Partner Pool" stackId="1" stroke={BRAND.berry} strokeWidth={2} fill="url(#partnerGrad)" />
               </AreaChart>
             </ResponsiveContainer>
@@ -213,6 +238,7 @@ export function WholesaleForecastPage() {
               keyExtractor={(w) => w.key}
               searchable={false}
               emptyMessage="No projected windows."
+              persistKey="wholesale-forecast"
               defaultSort={{ key: 'window', dir: 'asc' }}
             />
           </SectionCard>
@@ -222,7 +248,7 @@ export function WholesaleForecastPage() {
       {/* Contextual links */}
       <div className="flex flex-wrap gap-3 text-sm">
         <Link to="/cuttings" className="inline-flex items-center gap-1.5 text-primary-700 hover:underline">
-          <Sprout className="w-4 h-4" /> Cuttings Store
+          <Sprout className="w-4 h-4" /> Propagation
         </Link>
         <Link to="/sales" className="inline-flex items-center gap-1.5 text-primary-700 hover:underline">
           <ShoppingCart className="w-4 h-4" /> Sales

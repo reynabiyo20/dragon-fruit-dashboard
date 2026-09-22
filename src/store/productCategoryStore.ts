@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import { generateId, now } from '../utils/id';
 import { PRODUCT_CATEGORY_SEED } from '../constants';
 import { useProductStore } from './productStore';
+import { useInventoryStore } from './inventoryStore';
 
 /**
  * Managed two-level product taxonomy: category → subcategory (variety).
@@ -41,7 +42,10 @@ interface ProductCategoryState {
 
 // Bump to re-seed existing users with the updated taxonomy
 // v2: 30 real dragon-fruit varieties from the bookkeeping sheet
-const SEED_VERSION = 2;
+// v3: unified with inventory — inventory-only categories (Packing Material,
+//     Tools, Construction Material, Grafting Supplies, Other) are now top-level
+//     rows here, so products and inventory share ONE category taxonomy.
+const SEED_VERSION = 3;
 
 function entry(category: string, subcategory: string): ProductCategoryEntry {
   return { id: generateId(), category, subcategory, createdAt: now(), updatedAt: now() };
@@ -79,12 +83,17 @@ export const useProductCategoryStore = create<ProductCategoryState>()(
             e.id === id ? { ...e, category: cat, subcategory: sub, updatedAt: now() } : e,
           ),
         }));
-        // Cascade a variety rename to matching product records (full-pair match).
+        // Cascade a variety rename to matching product AND inventory records
+        // (full-pair match), since both share this taxonomy now.
         if (prev && prev.subcategory !== '' && (prev.category !== cat || prev.subcategory !== sub)) {
           const { products, updateProduct } = useProductStore.getState();
           products
             .filter((p) => p.category === prev.category && p.subcategory === prev.subcategory)
             .forEach((p) => updateProduct(p.id, { category: cat, subcategory: sub }));
+          const { items, updateItem } = useInventoryStore.getState();
+          items
+            .filter((i) => i.category === prev.category && i.subcategory === prev.subcategory)
+            .forEach((i) => updateItem(i.id, { category: cat, subcategory: sub }));
         }
       },
 
@@ -96,11 +105,16 @@ export const useProductCategoryStore = create<ProductCategoryState>()(
             e.category === from ? { ...e, category: target, updatedAt: now() } : e,
           ),
         }));
-        // Cascade the category rename to every product of that category.
+        // Cascade the category rename to every product AND inventory item of
+        // that category (both share this unified taxonomy).
         const { products, updateProduct } = useProductStore.getState();
         products
           .filter((p) => p.category === from)
           .forEach((p) => updateProduct(p.id, { category: target }));
+        const { items, updateItem } = useInventoryStore.getState();
+        items
+          .filter((i) => i.category === from)
+          .forEach((i) => updateItem(i.id, { category: target }));
       },
 
       deleteEntry: (id) => {

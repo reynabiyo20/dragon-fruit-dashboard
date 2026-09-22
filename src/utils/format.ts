@@ -26,6 +26,19 @@ export function formatNumber(value: number, decimals = 2): string {
   }).format(value);
 }
 
+/**
+ * Format a quantity for display: whole numbers show with no decimals ("9"),
+ * fractional values keep up to 2 significant decimals with trailing zeros
+ * trimmed ("2.5", "2.25"). Avoids the confusing "9.00 bottle" phrasing while
+ * still supporting fractional units like kilograms.
+ */
+export function formatQty(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 /** Format an ISO date string to a readable date */
 export function formatDate(isoString: string, fmt = 'MMM d, yyyy'): string {
   if (!isoString) return '—';

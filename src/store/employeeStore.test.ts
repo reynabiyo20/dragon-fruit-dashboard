@@ -60,3 +60,31 @@ describe('employeeStore active status', () => {
     expect(store().countByType()).toEqual({ 'Full Time': 1 });
   });
 });
+
+describe('employeeStore labor bookkeeping', () => {
+  it('defaults laborType + accountingClassification from the role (Farmer → Direct/COGS)', () => {
+    const e = store().addEmployee(input({ position: 'Farmer' }));
+    expect(e.laborType).toBe('Direct Labor');
+    expect(e.accountingClassification).toBe('Cost of Goods Sold (COGS)');
+  });
+
+  it('maps Sales Person to Selling Labor / OpEx Sales & Marketing', () => {
+    const e = store().addEmployee(input({ name: 'Jen', position: 'Sales Person' }));
+    expect(e.laborType).toBe('Selling Labor');
+    expect(e.accountingClassification).toBe('Operating Expense (OpEx) / Sales & Marketing');
+  });
+
+  it('respects an explicitly-provided laborType over the role default', () => {
+    const e = store().addEmployee(input({ position: 'Farmer', laborType: 'Indirect Labor' }));
+    expect(e.laborType).toBe('Indirect Labor');
+  });
+
+  it('countByLaborType groups active employees by labor type', () => {
+    store().addEmployee(input({ name: 'Don', position: 'Farmer' }));      // Direct Labor
+    store().addEmployee(input({ name: 'Aljun', position: 'Farmer' }));    // Direct Labor
+    store().addEmployee(input({ name: 'Ping', position: 'Farm Manager' })); // Indirect Labor
+    const inactive = store().addEmployee(input({ name: 'Kevin', position: 'Owner' })); // Administrative
+    store().setActive(inactive.id, false);
+    expect(store().countByLaborType()).toEqual({ 'Direct Labor': 2, 'Indirect Labor': 1 });
+  });
+});

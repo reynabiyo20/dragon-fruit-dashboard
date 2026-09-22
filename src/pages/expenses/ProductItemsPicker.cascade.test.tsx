@@ -40,7 +40,7 @@ describe('ProductItemsPicker cascades a checked product into vendor supplies', (
     useVendorStore.setState({
       vendors: [
         {
-          id: 'v1', vendor: 'Acme', contact: '', phone: '',
+          id: 'v1', vendor: 'Acme', contact: '', phone: '', location: { province: '', municipality: '' },
           supplies: [{ category: 'Fertilizer', subcategory: 'Nitrogen' }],
           notes: '', createdAt: '', updatedAt: '',
         },
@@ -65,7 +65,7 @@ describe('ProductItemsPicker cascades a checked product into vendor supplies', (
   it('inline "New product" persists a new subcategory and flags the line for resell', () => {
     useVendorStore.setState({
       vendors: [
-        { id: 'v1', vendor: 'Acme', contact: '', phone: '', supplies: [], notes: '', createdAt: '', updatedAt: '' },
+        { id: 'v1', vendor: 'Acme', contact: '', phone: '', location: { province: '', municipality: '' }, supplies: [], notes: '', createdAt: '', updatedAt: '' },
       ],
       _seeded: 999,
     });
@@ -126,7 +126,7 @@ describe('ProductItemsPicker cascades a checked product into vendor supplies', (
   it('leaves the line un-flagged for resell when "We resell this" is left off', () => {
     useVendorStore.setState({
       vendors: [
-        { id: 'v1', vendor: 'Acme', contact: '', phone: '', supplies: [], notes: '', createdAt: '', updatedAt: '' },
+        { id: 'v1', vendor: 'Acme', contact: '', phone: '', location: { province: '', municipality: '' }, supplies: [], notes: '', createdAt: '', updatedAt: '' },
       ],
       _seeded: 999,
     });

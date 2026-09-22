@@ -15,16 +15,17 @@ import {
 import { Handshake, Sprout, Truck, ShoppingBag } from 'lucide-react';
 import { SectionCard } from '../../../components/ui/SectionCard';
 import { formatPHP, formatNumber } from '../../../utils/format';
-import { CHART_REVENUE, CHART_EXPENSE } from '../../../constants/chartColors';
+import { CHART_REVENUE, CHART_EXPENSE, BRAND } from '../../../constants/chartColors';
 import {
   AXIS_TICK, AXIS_LINE, GRID_STROKE,
   TOOLTIP_CONTENT_STYLE, TOOLTIP_LABEL_STYLE, TOOLTIP_ITEM_STYLE,
 } from '../../../constants/chartTheme';
+import type { FarmPartnerLocationSlice } from '../useDashboardData';
 
 interface SupplyChainMixProps {
   procurementCost: number;
   salesEarned: number;
-  poolMix: { internalKg: number; partnerKg: number; totalKg: number };
+  poolMix: { farmKg: number; internalKg: number; partnerKg: number; totalKg: number };
   fulfillment: {
     deliveredPct: number;
     deliveredCount: number;
@@ -33,6 +34,7 @@ interface SupplyChainMixProps {
     avgLeadDays: number;
   };
   quality: { score: number; good: number; damaged: number; harvested: number };
+  farmPartnersByProvince: FarmPartnerLocationSlice[];
 }
 
 /** A labeled horizontal progress meter used for fulfillment/quality percentages. */
@@ -59,17 +61,20 @@ function meterTone(pct: number): string {
 }
 
 export function SupplyChainMix({
-  procurementCost, salesEarned, poolMix, fulfillment, quality,
+  procurementCost, salesEarned, poolMix, fulfillment, quality, farmPartnersByProvince,
 }: SupplyChainMixProps) {
+  const totalPartners = farmPartnersByProvince.reduce((sum, r) => sum + r.count, 0);
   const procurementData = [
     { name: 'Procurement', value: procurementCost, fill: CHART_EXPENSE },
     { name: 'Sales', value: salesEarned, fill: CHART_REVENUE },
   ];
   const hasPool = poolMix.totalKg > 0;
+  const farmPct = hasPool ? (poolMix.farmKg / poolMix.totalKg) * 100 : 0;
   const internalPct = hasPool ? (poolMix.internalKg / poolMix.totalKg) * 100 : 0;
   const partnerPct = hasPool ? (poolMix.partnerKg / poolMix.totalKg) * 100 : 0;
 
   return (
+    <div className="space-y-4">
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
       {/* Procurement vs Sales */}
       <SectionCard title="Procurement vs Sales" subtitle="Cash out vs cash in">
@@ -108,9 +113,15 @@ export function SupplyChainMix({
         ) : (
           <div className="space-y-4 py-2">
             <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-gold-50"><Sprout className="w-5 h-5 text-gold-600" /></div>
+              <div className="flex-1">
+                <Meter label="Farm Plants Pool" pct={farmPct} tone="bg-gold-400" caption={`${formatNumber(poolMix.farmKg, 1)} kg projected`} />
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-leaf-50"><Sprout className="w-5 h-5 text-leaf-600" /></div>
               <div className="flex-1">
-                <Meter label="Internal Farm Pool" pct={internalPct} tone="bg-leaf-500" caption={`${formatNumber(poolMix.internalKg, 1)} kg projected`} />
+                <Meter label="Internal (Cuttings) Pool" pct={internalPct} tone="bg-leaf-500" caption={`${formatNumber(poolMix.internalKg, 1)} kg projected`} />
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -164,6 +175,37 @@ export function SupplyChainMix({
             </div>
           </div>
         </div>
+      </SectionCard>
+    </div>
+
+      {/* Farm Partners by Location — where our supply partners are based. */}
+      <SectionCard
+        title="Farm Partners by Location"
+        subtitle={totalPartners > 0
+          ? `${totalPartners} farm partner${totalPartners === 1 ? '' : 's'} by province`
+          : 'Where our supply partners are based, by province'}
+      >
+        {totalPartners === 0 ? (
+          <div className="h-48 flex items-center justify-center text-sm text-gray-400 text-center px-4">
+            No farm partners yet. Flag a customer as a Farm Partner (with a province) to map them here.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={farmPartnersByProvince} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+              <XAxis dataKey="province" tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} interval={0} angle={-15} textAnchor="end" height={60} />
+              <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={36} allowDecimals={false} />
+              <Tooltip
+                formatter={(v) => [`${v} partner${Number(v) === 1 ? '' : 's'}`, 'Farm Partners']}
+                cursor={{ fill: 'rgba(106, 58, 103, 0.06)' }}
+                contentStyle={TOOLTIP_CONTENT_STYLE}
+                labelStyle={TOOLTIP_LABEL_STYLE}
+                itemStyle={TOOLTIP_ITEM_STYLE}
+              />
+              <Bar dataKey="count" name="Farm Partners" fill={BRAND.berry} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </SectionCard>
     </div>
   );

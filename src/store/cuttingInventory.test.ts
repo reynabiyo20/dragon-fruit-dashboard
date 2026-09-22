@@ -75,7 +75,6 @@ describe('cuttings inventory: packed feeds endingQty; delivery drives sold', () 
       sourceCostPerCutting: 0,
       graftCostPerCutting: 0,
       rootWeeks: 3,
-      quantitySold: 0,
       notes: '',
     });
     useCuttingStore.getState().markPacked(b.id);
@@ -105,7 +104,7 @@ describe('cuttings inventory: packed feeds endingQty; delivery drives sold', () 
     expect(r.endingQty).toBe(30);
   });
 
-  it('a DELIVERED cutting sale increments sold and reduces available + endingQty', () => {
+  it('a DELIVERED cutting sale increments sold and reduces packed, available + endingQty', () => {
     addPackedBatch(30);
     useSaleStore.getState().addSale({
       date: '2026-01-01', invoiceNumber: '', customerId: '', customerName: 'X', saleType: '',
@@ -114,8 +113,27 @@ describe('cuttings inventory: packed feeds endingQty; delivery drives sold', () 
       soldByEmployeeId: '', soldByName: '', notes: '',
     });
     const r = row();
-    expect(r.sold).toBe(10);
+    expect(r.sold).toBe(10);           // lifetime sold counter
+    expect(r.packed).toBe(20);         // packed pool drawn down by the sale
     expect(r.availableForSale).toBe(20);
-    expect(r.endingQty).toBe(20); // 0 + 0 - 0 - 10 + 30
+    // For cuttings the departure is captured by -packed, so `sold` is not
+    // double-subtracted: 0 + 0 - 0 + 20 (packed) = 20.
+    expect(r.endingQty).toBe(20);
+  });
+
+  it('reversing a DELIVERED cutting sale restores packed + endingQty', () => {
+    addPackedBatch(30);
+    const sale = useSaleStore.getState().addSale({
+      date: '2026-01-01', invoiceNumber: '', customerId: '', customerName: 'X', saleType: '',
+      items: [{ productId, productName: 'Cuttings – Thai White', quantity: 10, unitPrice: 300, surcharge: 0, total: 3000 }],
+      paymentMethod: 'Cash', paymentDetails: '', paid: true, delivered: true,
+      soldByEmployeeId: '', soldByName: '', notes: '',
+    });
+    useSaleStore.getState().updateSale(sale.id, { delivered: false });
+    const r = row();
+    expect(r.sold).toBe(0);
+    expect(r.packed).toBe(30);         // packed restored
+    expect(r.availableForSale).toBe(30);
+    expect(r.endingQty).toBe(30);
   });
 });

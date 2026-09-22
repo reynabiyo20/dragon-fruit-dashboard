@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Product } from '../types';
 import { generateId, now } from '../utils/id';
+import { cascadeProductUnit } from './productUnitCascade';
+import { cascadeProductName } from './entityNameCascade';
 
 interface ProductState {
   products: Product[];
@@ -21,6 +23,10 @@ interface ProductState {
   upsertFromPurchase: (input: { category: string; subcategory: string; unit: string; costPHP: number }) => Product;
   /** Products that have a selling price set (₱ > 0) */
   pricedCount: () => number;
+  /** Products that have no selling price set (₱ = 0) */
+  noPriceCount: () => number;
+  /** Products that have no cost set (₱ = 0) */
+  noCostCount: () => number;
   /** Average margin % across priced products */
   averageMarginPct: () => number;
   /** Count grouped by category (e.g. Fruit, Cuttings, Fertilizer) */
@@ -61,7 +67,10 @@ function p(
 // Seed version — increment this number to force all users to get fresh seed data
 // v4: synced to the Bulacan Dragon Fruit Depot bookkeeping sheet — 30 real
 // varieties (fruit + cuttings) with real prices, and real fertilizer prices.
-const SEED_VERSION = 4;
+// v5: aligned seed unit casing to the canonical unit list (Piece→piece,
+// Bottle→bottle, Sack→sack, Jug→jug) so units render in the expense unit
+// dropdowns instead of falling back to a blank "—".
+const SEED_VERSION = 5;
 
 const SEED_PRODUCTS: Product[] = [
   // ── Fruit (₱/kg) ────────────────────────────────────────────────────────────
@@ -98,47 +107,47 @@ const SEED_PRODUCTS: Product[] = [
 
   // ── Cuttings (₱/piece) ───────────────────────────────────────────────────────
   // Orders under 25 cuttings incur a +₱100/cutting surcharge, applied in Sales.
-  p('Cuttings', 'Thai White',             35, 300, 0, 10, 'Piece', 'Under 25 cuttings: +₱100 per cutting surcharge'),
-  p('Cuttings', 'Vietnamese White',       35, 300, 0, 10, 'Piece', 'Low Stock — buy, graft then plant, wait until it has roots then sell'),
-  p('Cuttings', 'Moroccan Red',           35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Red Jaina',              35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Philippine Purple',      50, 350, 0, 10, 'Piece'),
-  p('Cuttings', 'American Beauty',        35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Sugar Dragon',           35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Ecuador Palora',         35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'AX Hybrid',              35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Asunta 5 Paco',          35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Physical Graffiti',      35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Siam Magenta',           35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Honey White',            35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Nicaraguan Red',         35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Australian Isis Yellow', 35, 300, 0, 10, 'Piece'),
-  p('Cuttings', "Halley's Comet",         35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Delight',                35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Voodoo Child',           35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Rainbow Dragon',         35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Seoul Kitchen',          35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Purple Haze',            35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Dark Star',              35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Guatemalan Red',         35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Condon',                 35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Zamora',                 35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Bruni',                  35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Connie Mayer',           35, 300, 0, 10, 'Piece'),
-  p('Cuttings', 'Zebra',                  40, 450, 0, 10, 'Piece'),
-  p('Cuttings', 'Yellow Dragon',          35, 300, 0, 11, 'Piece'),
-  p('Cuttings', 'Orejona',                35, 300, 0, 12, 'Piece'),
+  p('Cuttings', 'Thai White',             35, 300, 0, 10, 'piece', 'Under 25 cuttings: +₱100 per cutting surcharge'),
+  p('Cuttings', 'Vietnamese White',       35, 300, 0, 10, 'piece', 'Low Stock — buy, graft then plant, wait until it has roots then sell'),
+  p('Cuttings', 'Moroccan Red',           35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Red Jaina',              35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Philippine Purple',      50, 350, 0, 10, 'piece'),
+  p('Cuttings', 'American Beauty',        35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Sugar Dragon',           35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Ecuador Palora',         35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'AX Hybrid',              35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Asunta 5 Paco',          35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Physical Graffiti',      35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Siam Magenta',           35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Honey White',            35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Nicaraguan Red',         35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Australian Isis Yellow', 35, 300, 0, 10, 'piece'),
+  p('Cuttings', "Halley's Comet",         35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Delight',                35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Voodoo Child',           35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Rainbow Dragon',         35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Seoul Kitchen',          35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Purple Haze',            35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Dark Star',              35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Guatemalan Red',         35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Condon',                 35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Zamora',                 35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Bruni',                  35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Connie Mayer',           35, 300, 0, 10, 'piece'),
+  p('Cuttings', 'Zebra',                  40, 450, 0, 10, 'piece'),
+  p('Cuttings', 'Yellow Dragon',          35, 300, 0, 11, 'piece'),
+  p('Cuttings', 'Orejona',                35, 300, 0, 12, 'piece'),
 
   // ── Fertilizers ──────────────────────────────────────────────────────────
-  p('Fertilizer', 'Magnesium',      410,    1150, 0, 0, 'Bottle', 'Future Project: Manufactured Internally'),
-  p('Fertilizer', 'Vermicast Worm', 500,     900, 0, 0, 'Sack'),
-  p('Fertilizer', 'Cocopeat',       220,     500, 0, 0, 'Sack'),
-  p('Fertilizer', 'Chicken Manure',  70,     170, 0, 0, 'Sack'),
-  p('Fertilizer', 'Rice Hull',       75,     170, 0, 0, 'Sack'),
-  p('Fertilizer', 'CRH',             30,     150, 0, 0, 'Sack'),
-  p('Fertilizer', 'Neem Oil',       184.5,     0, 0, 0, 'Bottle', 'Selling price TBD'),
-  p('Fertilizer', 'Nordox',        2000,    3000, 0, 0, 'Jug'),
-  p('Fertilizer', 'Carbomax',          0,      0, 0, 0, 'Sack',   'Cost and selling price TBD'),
+  p('Fertilizer', 'Magnesium',      410,    1150, 0, 0, 'bottle', 'Future Project: Manufactured Internally'),
+  p('Fertilizer', 'Vermicast Worm', 500,     900, 0, 0, 'sack'),
+  p('Fertilizer', 'Cocopeat',       220,     500, 0, 0, 'sack'),
+  p('Fertilizer', 'Chicken Manure',  70,     170, 0, 0, 'sack'),
+  p('Fertilizer', 'Rice Hull',       75,     170, 0, 0, 'sack'),
+  p('Fertilizer', 'CRH',             30,     150, 0, 0, 'sack'),
+  p('Fertilizer', 'Neem Oil',       184.5,     0, 0, 0, 'bottle', 'Selling price TBD'),
+  p('Fertilizer', 'Nordox',        2000,    3000, 0, 0, 'jug'),
+  p('Fertilizer', 'Carbomax',          0,      0, 0, 0, 'sack',   'Cost and selling price TBD'),
 
   // ── Other Products ────────────────────────────────────────────────────────
   p('Other', 'Webinar', 0, 1100, 0, 20, 'session', '2 Hours Duration'),
@@ -162,12 +171,37 @@ export const useProductStore = create<ProductState>()(
         return product;
       },
 
-      updateProduct: (id, data) =>
+      updateProduct: (id, data) => {
+        const prev = get().products.find((p) => p.id === id);
         set((state) => ({
           products: state.products.map((p) =>
             p.id === id ? { ...p, ...data, updatedAt: now() } : p
           ),
-        })),
+        }));
+        // When the unit changed, cascade it to inventory / vendor-products /
+        // expenses for the same (category, subcategory) so the unit stays
+        // consistent app-wide. Uses the product's own (possibly updated) identity.
+        const next = get().products.find((p) => p.id === id);
+        if (
+          next &&
+          data.unit !== undefined &&
+          (!prev || prev.unit.trim().toLowerCase() !== next.unit.trim().toLowerCase())
+        ) {
+          cascadeProductUnit(next.category, next.subcategory, next.unit);
+        }
+        // When the product's IDENTITY (category/subcategory) changes, refresh the
+        // denormalized product-name copies on sale & expense line items that link
+        // to it by id, so their displayed label matches the renamed product.
+        if (
+          next &&
+          (data.category !== undefined || data.subcategory !== undefined) &&
+          (!prev ||
+            prev.category.trim().toLowerCase() !== next.category.trim().toLowerCase() ||
+            prev.subcategory.trim().toLowerCase() !== next.subcategory.trim().toLowerCase())
+        ) {
+          cascadeProductName(id, next.category, next.subcategory);
+        }
+      },
 
       deleteProduct: (id) =>
         set((state) => ({
@@ -203,6 +237,9 @@ export const useProductStore = create<ProductState>()(
                 p.id === existing.id ? { ...p, ...patch, updatedAt: now() } : p,
               ),
             }));
+            // If this purchase filled in a previously-missing unit, align the
+            // other stores for this variety (idempotent — skips matching rows).
+            if (patch.unit) cascadeProductUnit(cat, sub, patch.unit);
             return { ...existing, ...patch };
           }
           return existing;
@@ -221,10 +258,16 @@ export const useProductStore = create<ProductState>()(
           updatedAt: now(),
         };
         set((state) => ({ products: [...state.products, product] }));
+        // A brand-new product's unit becomes the canonical one for its variety.
+        if (u) cascadeProductUnit(cat, sub, u);
         return product;
       },
 
       pricedCount: () => get().products.filter((p) => p.sellingPricePHP > 0).length,
+
+      noPriceCount: () => get().products.filter((p) => p.sellingPricePHP <= 0).length,
+
+      noCostCount: () => get().products.filter((p) => p.costPHP <= 0).length,
 
       averageMarginPct: () => {
         const priced = get().products.filter((p) => p.sellingPricePHP > 0);

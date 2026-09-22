@@ -1,12 +1,13 @@
 import { useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { Plus, Sprout, AlertTriangle, DollarSign, PackageCheck, Pencil, FlaskConical, ListChecks } from 'lucide-react';
+import { Plus, Sprout, AlertTriangle, DollarSign, PackageCheck, Pencil, FlaskConical, ListChecks, PackagePlus, Bell, BellOff, X } from 'lucide-react';
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import { useInventoryStore } from '../../store/inventoryStore';
+import { useProductStore } from '../../store/productStore';
 import { useUnitStore } from '../../store/optionStores';
 import type { InventoryItem } from '../../types';
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -18,13 +19,12 @@ import { EmptyState } from '../../components/ui/EmptyState';
 import { StatCard } from '../../components/ui/StatCard';
 import { SectionCard } from '../../components/ui/SectionCard';
 import { CollapsibleSection } from '../../components/ui/CollapsibleSection';
-import { Badge } from '../../components/ui/Badge';
 import { RowActions } from '../../components/ui/RowActions';
 import { UndoBar } from '../../components/ui/UndoBar';
 import { formatNumber, formatPHP, formatDate, categoryLabel } from '../../utils/format';
 import { todayISO } from '../../utils/date';
 import { useListCrud } from '../../hooks/useListCrud';
-import { LOW_STOCK_THRESHOLD, CUTTINGS_PRODUCT_TYPE, DRINK_PRODUCT_TYPE } from '../../constants';
+import { LOW_STOCK_THRESHOLD, CUTTINGS_PRODUCT_TYPE, DRINK_PRODUCT_TYPE, isServiceCategory } from '../../constants';
 import { BRAND, PIE_COLORS } from '../../constants/chartColors';
 import {
   AXIS_TICK, AXIS_LINE, GRID_STROKE,
@@ -34,12 +34,28 @@ import {
 } from '../../constants/chartTheme';
 import { useProductCategoryStore } from '../../store/productCategoryStore';
 import { useManufacturingStore } from '../../store/manufacturingStore';
+import { useTableUiStore } from '../../store/tableUiStore';
 import { syncTaxonomy } from '../../store/taxonomySync';
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import { InventoryForm } from './InventoryForm';
 
 export function InventoryPage() {
-  const { items, deleteItem, updateItem, totalValue, lowStockItems, packCuttings, ensureRow, adjustProduced } = useInventoryStore();
+  const { items, deleteItem, updateItem, totalValue, lowStockItems, packCuttings, unpackCuttings, ensureRow, adjustProduced, adjustUsedCuttings } = useInventoryStore();
+  // Products store — used by the "Add to Products" bulk action, which turns
+  // selected inventory rows into sellable products (find-or-create, seeding cost
+  // from unitCost; selling price is left for the user to fill in later).
+  const upsertSellableProduct = useProductStore((s) => s.upsertFromPurchase);
+  const findSellableProduct = useProductStore((s) => s.findByCategorySub);
+  const deleteProduct = useProductStore((s) => s.deleteProduct);
+  // Subscribe to the product list so the per-row "Sold" indicator updates live as
+  // products are linked/unlinked. Keyed by normalized category|subcategory.
+  const products = useProductStore((s) => s.products);
+  const soldKeys = useMemo(() => {
+    const norm = (s: string) => s.trim().toLowerCase();
+    return new Set(products.map((p) => `${norm(p.category)}|${norm(p.subcategory)}`));
+  }, [products]);
+  const isSold = (i: InventoryItem) =>
+    soldKeys.has(`${i.category.trim().toLowerCase()}|${i.subcategory.trim().toLowerCase()}`);
   const unitOptions = useUnitStore((s) => s.values).map((v) => ({ value: v, label: v }));
   // Taxonomy for the production target picker (any category + variety).
   const categoriesList = useProductCategoryStore((s) => s.categories);
@@ -48,6 +64,11 @@ export function InventoryPage() {
   const manufacturing = useManufacturingStore();
   const crud = useListCrud<InventoryItem>();
   const [showLowStockOnly, setShowLowStockOnly] = useState(false);
+  // Reset the shared <Table> UI state (search/sort) for a given persist key. Used
+  // when switching in/out of the low-stock view so a lingering search from the
+  // full-inventory view can't silently hide low-stock rows — which would make the
+  // visible table disagree with the "Low Stock Alerts" KPI count.
+  const patchTableUi = useTableUiStore((s) => s.patch);
   // "Pack" flow: the row whose bare cuttings we're packing + the entered qty.
   const [packTarget, setPackTarget] = useState<InventoryItem | null>(null);
   const [packQty, setPackQty] = useState('');
@@ -67,6 +88,12 @@ export function InventoryPage() {
   // 'produce' mode: the target product this input is being staged toward.
   const [prodTargetCategory, setProdTargetCategory] = useState('');
   const [prodTargetSubcategory, setProdTargetSubcategory] = useState('');
+  // Cuttings usage that would eat into PACKED stock (used > needsPacking) pauses
+  // to confirm. Holds a ready-to-run finalizer + the overflow amount for the
+  // warning copy; cleared on confirm/cancel.
+  const [usagePackedWarn, setUsagePackedWarn] = useState<
+    { fromPacked: number; needsPacking: number; total: number; apply: () => void } | null
+  >(null);
 
   // "Produce finished goods" flow: turn a target's staged inputs into stock.
   const [produceTarget, setProduceTarget] = useState<InventoryItem | null>(null);
@@ -83,7 +110,9 @@ export function InventoryPage() {
   const [bulkBeginRows, setBulkBeginRows] = useState<InventoryItem[] | null>(null);
   const [bulkBeginValue, setBulkBeginValue] = useState('');
   const [bulkBeginError, setBulkBeginError] = useState('');
-  const [undoSnapshot, setUndoSnapshot] = useState<{ message: string; prev: { id: string; beginningQty: number }[] } | null>(null);
+  // Shared undo for any bulk field edit: each entry stores the row's PREVIOUS
+  // value(s) as a patch, so undo simply re-applies them via updateItem.
+  const [undoSnapshot, setUndoSnapshot] = useState<{ message: string; prev: { id: string; patch: Partial<InventoryItem> }[] } | null>(null);
 
   const openBulkBegin = (rows: InventoryItem[]) => {
     if (rows.length === 0) return;
@@ -103,7 +132,7 @@ export function InventoryPage() {
       setBulkBeginError('Enter a valid beginning quantity (0 or more).');
       return;
     }
-    const prev = bulkBeginRows.map((i) => ({ id: i.id, beginningQty: i.beginningQty }));
+    const prev = bulkBeginRows.map((i) => ({ id: i.id, patch: { beginningQty: i.beginningQty } }));
     bulkBeginRows.forEach((i) => updateItem(i.id, { beginningQty: value }));
     const count = bulkBeginRows.length;
     setUndoSnapshot({
@@ -116,8 +145,77 @@ export function InventoryPage() {
 
   const undoBulk = () => {
     if (!undoSnapshot) return;
-    undoSnapshot.prev.forEach(({ id, beginningQty }) => updateItem(id, { beginningQty }));
+    undoSnapshot.prev.forEach(({ id, patch }) => updateItem(id, patch));
     setUndoSnapshot(null);
+  };
+
+  // ── Bulk "Add to Products" (undoable) ───────────────────────────────────────
+  // Turns the selected inventory rows into sellable products. Each row is
+  // upserted by (category, subcategory): a new product is created with its cost
+  // seeded from the row's unitCost and a blank selling price, while an existing
+  // product is left as-is (upsertFromPurchase never overwrites a set cost/price).
+  // Rows without a subcategory can't identify a product, so they're skipped.
+  // Undo removes only the products this action newly created (existing products
+  // are never touched, so there's nothing to revert for them).
+  const [bulkAddRows, setBulkAddRows] = useState<InventoryItem[] | null>(null);
+  const [addUndo, setAddUndo] = useState<{ message: string; createdIds: string[] } | null>(null);
+  // Undo for the "Pack" action: snapshot the row + how much was just packed so
+  // it can be moved back into Needs Packing in one click (only the still-unsold
+  // portion is reversible).
+  const [packUndo, setPackUndo] = useState<{ message: string; itemId: string; qty: number } | null>(null);
+
+  const openBulkAddToProducts = (rows: InventoryItem[]) => {
+    if (rows.length === 0) return;
+    setBulkAddRows(rows);
+  };
+  const closeBulkAddToProducts = () => setBulkAddRows(null);
+
+  // Rows in the current selection that can be turned into products (have a
+  // subcategory) split into those that will be newly created vs already exist.
+  const addable = (bulkAddRows ?? []).filter((i) => i.subcategory.trim() !== '');
+  const skipped = (bulkAddRows ?? []).length - addable.length;
+  const toCreate = addable.filter((i) => !findSellableProduct(i.category, i.subcategory));
+  const alreadyExist = addable.length - toCreate.length;
+
+  const confirmBulkAddToProducts = () => {
+    if (!bulkAddRows) return;
+    const createdIds: string[] = [];
+    addable.forEach((i) => {
+      const existedBefore = !!findSellableProduct(i.category, i.subcategory);
+      const product = upsertSellableProduct({
+        category: i.category,
+        subcategory: i.subcategory,
+        unit: i.unit,
+        costPHP: i.unitCost,
+      });
+      if (!existedBefore) createdIds.push(product.id);
+    });
+    const created = createdIds.length;
+    if (created === 0) {
+      toast(
+        alreadyExist > 0
+          ? `Already in Products — nothing to add`
+          : `No products added — selected items have no variety set`,
+        { icon: 'ℹ️' },
+      );
+      closeBulkAddToProducts();
+      return;
+    }
+    setAddUndo({
+      message:
+        `Added ${created} product${created !== 1 ? 's' : ''} from inventory` +
+        (alreadyExist > 0 ? ` (${alreadyExist} already existed)` : '') +
+        `. Set their selling price in Products.`,
+      createdIds,
+    });
+    toast.success(`Added ${created} product${created !== 1 ? 's' : ''} for sale`);
+    closeBulkAddToProducts();
+  };
+
+  const undoAddToProducts = () => {
+    if (!addUndo) return;
+    addUndo.createdIds.forEach((id) => deleteProduct(id));
+    setAddUndo(null);
   };
 
   // Deep-link support: /inventory?highlight=<variety> (e.g. from the Cuttings
@@ -139,6 +237,17 @@ export function InventoryPage() {
   const alerts = useMemo(() => lowStockItems(LOW_STOCK_THRESHOLD), [items]);
   const invValue = useMemo(() => totalValue(), [items]);
   const displayItems = showLowStockOnly ? alerts : items;
+
+  // The low-stock view uses its OWN persisted search/sort ("inventory.low") so a
+  // search typed against the full inventory ("inventory") can't carry over and
+  // hide low-stock rows. Toggling clears the destination view's search first, so
+  // the low-stock table always opens showing exactly `alerts` — keeping the
+  // visible rows in lockstep with the "Low Stock Alerts" KPI count.
+  const tablePersistKey = showLowStockOnly ? 'inventory.low' : 'inventory';
+  const toggleLowStock = (next: boolean) => {
+    patchTableUi(next ? 'inventory.low' : 'inventory', { query: '' });
+    setShowLowStockOnly(next);
+  };
 
   // ── Chart data ───────────────────────────────────────────────────────────────
   /** Inventory value (ending qty × unit cost) grouped by category, descending. */
@@ -192,11 +301,29 @@ export function InventoryPage() {
     const qty = Number(packQty) || 0;
     const packed = packCuttings(packTarget.id, qty);
     if (packed > 0) {
-      toast.success(`Packed ${formatNumber(packed, 0)} ${packTarget.subcategory} — now Ready for Sale`);
+      toast.success(`Packed ${formatNumber(packed, 0)} ${packTarget.subcategory} — now Available to Sell`);
+      // Offer a one-click undo back into Needs Packing.
+      setPackUndo({
+        message: `Packed ${formatNumber(packed, 0)} ${packTarget.subcategory} — now Available to Sell.`,
+        itemId: packTarget.id,
+        qty: packed,
+      });
     } else {
-      toast.error('Enter a quantity to pack (up to what needs packing).');
+      toast.error('Enter a quantity packed (up to what needs packing).');
     }
     closePack();
+  };
+
+  const undoPack = () => {
+    if (!packUndo) return;
+    const moved = unpackCuttings(packUndo.itemId, packUndo.qty);
+    if (moved > 0) {
+      toast(`Moved ${formatNumber(moved, 0)} back to Needs Packing`, { icon: '↩️' });
+    } else {
+      // The packed stock was already sold/delivered, so it can't be pulled back.
+      toast.error('Cannot undo — those cuttings have already been sold.');
+    }
+    setPackUndo(null);
   };
 
   // ── Record Usage ────────────────────────────────────────────────────────────
@@ -226,6 +353,11 @@ export function InventoryPage() {
     const note = usageNote.trim();
     const prevUsed = usageTarget.used ?? 0;
     const ending = usageTarget.endingQty;
+    // Cuttings consume physical stock from the pools (Needs Packing first, then
+    // Packed) rather than a plain `used` subtraction. When the amount used spills
+    // past Needs Packing into Packed stock, we pause to confirm first.
+    const isCutting = usageTarget.category.trim().toLowerCase() === CUTTINGS_PRODUCT_TYPE.toLowerCase();
+    const needsPacking = usageTarget.needsPacking ?? 0;
 
     if (usageMode === 'use') {
       // Record an amount consumed NOW (increment). Must be positive, can't exceed
@@ -249,6 +381,29 @@ export function InventoryPage() {
       const newUsed = prevUsed + value;
       const logLine = `${formatDate(usageDate)}: used ${formatNumber(value, 2)} (→ ${formatNumber(newUsed, 2)} total) — ${note}`;
       const nextNotes = usageTarget.notes?.trim() ? `${usageTarget.notes.trim()}\n${logLine}` : logLine;
+
+      if (isCutting) {
+        // Draw from Needs Packing first, then Packed. Log the note and, when the
+        // usage would eat into Packed stock, confirm first.
+        const targetId = usageTarget.id;
+        const apply = () => {
+          const fromPacked = adjustUsedCuttings(targetId, value);
+          updateItem(targetId, { notes: nextNotes });
+          if (fromPacked > 0) {
+            toast.success(`Recorded ${formatNumber(value, 2)} used (${formatNumber(fromPacked, 2)} from packed)`);
+          } else {
+            toast.success(`Recorded ${formatNumber(value, 2)} used`);
+          }
+          closeUsage();
+        };
+        if (value > needsPacking) {
+          setUsagePackedWarn({ fromPacked: value - needsPacking, needsPacking, total: value, apply });
+          return;
+        }
+        apply();
+        return;
+      }
+
       updateItem(usageTarget.id, { used: newUsed, notes: nextNotes });
       toast.success(`Recorded ${formatNumber(value, 2)} used`);
       closeUsage();
@@ -285,25 +440,48 @@ export function InventoryPage() {
         setUsageError("The target product must differ from the input item.");
         return;
       }
-      // Make sure the target has an inventory row to receive the finished goods.
-      const targetRow = ensureRow(tCat, tSub, 'piece');
-      // Stage the input into the target's manufacturing run.
-      manufacturing.stageInput({
-        targetCategory: tCat,
-        targetSubcategory: tSub,
-        targetUnit: targetRow.unit,
-        input: { category: usageTarget.category, subcategory: usageTarget.subcategory, quantity: value, unit: usageTarget.unit },
-        date: usageDate,
-      });
       // Deduct the input from stock via `used` and log it.
       const newUsed = prevUsed + value;
       const targetLabel = categoryLabel(tCat, tSub);
       const base = `${formatDate(usageDate)}: used ${formatNumber(value, 2)} (→ ${formatNumber(newUsed, 2)} total) — to make ${targetLabel}`;
       const logLine = note ? `${base} (${note})` : base;
       const nextNotes = usageTarget.notes?.trim() ? `${usageTarget.notes.trim()}\n${logLine}` : logLine;
-      updateItem(usageTarget.id, { used: newUsed, notes: nextNotes });
-      toast.success(`Staged ${formatNumber(value, 2)} ${usageTarget.subcategory} for ${targetLabel}`);
-      closeUsage();
+
+      // Run the manufacturing staging + stock deduction. Deferred so a cuttings
+      // packed-stock warning can gate it behind a confirmation.
+      const targetId = usageTarget.id;
+      const inputItem = { category: usageTarget.category, subcategory: usageTarget.subcategory, quantity: value, unit: usageTarget.unit };
+      const apply = () => {
+        // Make sure the target has an inventory row to receive the finished goods.
+        const targetRow = ensureRow(tCat, tSub, 'piece');
+        // Stage the input into the target's manufacturing run.
+        manufacturing.stageInput({
+          targetCategory: tCat,
+          targetSubcategory: tSub,
+          targetUnit: targetRow.unit,
+          input: inputItem,
+          date: usageDate,
+        });
+        if (isCutting) {
+          const fromPacked = adjustUsedCuttings(targetId, value);
+          updateItem(targetId, { notes: nextNotes });
+          if (fromPacked > 0) {
+            toast.success(`Staged ${formatNumber(value, 2)} ${inputItem.subcategory} for ${targetLabel} (${formatNumber(fromPacked, 2)} from packed)`);
+          } else {
+            toast.success(`Staged ${formatNumber(value, 2)} ${inputItem.subcategory} for ${targetLabel}`);
+          }
+        } else {
+          updateItem(targetId, { used: newUsed, notes: nextNotes });
+          toast.success(`Staged ${formatNumber(value, 2)} ${inputItem.subcategory} for ${targetLabel}`);
+        }
+        closeUsage();
+      };
+
+      if (isCutting && value > needsPacking) {
+        setUsagePackedWarn({ fromPacked: value - needsPacking, needsPacking, total: value, apply });
+        return;
+      }
+      apply();
       return;
     }
 
@@ -370,13 +548,30 @@ export function InventoryPage() {
     // from their source rows when they were staged.
     manufacturing.produceRun(run.id, qty, produceTarget.unit, produceDate);
     adjustProduced(produceTarget.id, qty);
+    // Log the finished good into the product store so a produced/processed item
+    // becomes a sellable product. Find-or-create by (category, subcategory):
+    // a brand-new product is seeded with its cost from the target row's unitCost
+    // and a blank selling price for the user to fill in later; an existing product
+    // is left as-is (upsertFromPurchase never overwrites a set cost/price).
+    const productExistedBefore = !!findSellableProduct(produceTarget.category, produceTarget.subcategory);
+    syncTaxonomy(produceTarget.category, produceTarget.subcategory);
+    upsertSellableProduct({
+      category: produceTarget.category,
+      subcategory: produceTarget.subcategory,
+      unit: produceTarget.unit,
+      costPHP: produceTarget.unitCost,
+    });
     const inputsSummary = run.inputs
       .map((inp) => `${formatNumber(inp.quantity, 2)} ${inp.unit} ${categoryLabel(inp.category, inp.subcategory)}`)
       .join(', ');
     const logLine = `${formatDate(produceDate)}: produced ${formatNumber(qty, 2)} ${produceTarget.unit} from ${inputsSummary || 'staged inputs'}`;
     const nextNotes = produceTarget.notes?.trim() ? `${produceTarget.notes.trim()}\n${logLine}` : logLine;
     updateItem(produceTarget.id, { notes: nextNotes });
-    toast.success(`Produced ${formatNumber(qty, 2)} ${produceTarget.subcategory}`);
+    toast.success(
+      productExistedBefore
+        ? `Produced ${formatNumber(qty, 2)} ${produceTarget.subcategory}`
+        : `Produced ${formatNumber(qty, 2)} ${produceTarget.subcategory} — added to Products`,
+    );
     closeProduce();
   };
 
@@ -400,6 +595,14 @@ export function InventoryPage() {
       accessor: (i) => (
         <div className="flex items-center gap-1.5">
           <span className="font-medium text-gray-900">{i.subcategory}</span>
+          {isSold(i) && (
+            <span
+              className="text-[10px] font-semibold uppercase tracking-wide text-leaf-700 bg-leaf-50 border border-leaf-200 px-1.5 py-0.5 rounded-full flex-shrink-0"
+              title="Sold in Products"
+            >
+              Sold
+            </span>
+          )}
           {alerts.some((a) => a.id === i.id) && (
             <AlertTriangle className="w-3.5 h-3.5 text-gold-500 flex-shrink-0" aria-label="Low stock" />
           )}
@@ -408,7 +611,18 @@ export function InventoryPage() {
       sortValue: (i) => i.subcategory,
     },
     { key: 'unit',         header: 'Unit',       accessor: (i) => i.unit,                          sortValue: (i) => i.unit,         editable: { type: 'select', options: unitOptions, getValue: (i) => i.unit } },
-    { key: 'beginningQty', header: 'Beginning',  accessor: (i) => formatNumber(i.beginningQty, 2), sortValue: (i) => i.beginningQty, editable: { type: 'number', step: '0.01', min: 0, getValue: (i) => i.beginningQty } },
+    {
+      key: 'beginningQty',
+      header: 'Beginning',
+      // Cuttings don't use a plain beginning qty (tracked via Packed / Needs
+      // Packing); show a dash for them, matching the other N/A columns.
+      accessor: (i) =>
+        i.category.trim().toLowerCase() === CUTTINGS_PRODUCT_TYPE.toLowerCase()
+          ? <span className="text-gray-300" title="Cuttings are tracked under Packed / Needs Packing">—</span>
+          : formatNumber(i.beginningQty, 2),
+      sortValue: (i) => i.beginningQty,
+      editable: { type: 'number', step: '0.01', min: 0, getValue: (i) => i.beginningQty, canEdit: (i) => !isServiceCategory(i.category) && i.category.trim().toLowerCase() !== CUTTINGS_PRODUCT_TYPE.toLowerCase() },
+    },
     {
       key: 'packed',
       header: 'Packed',
@@ -481,7 +695,7 @@ export function InventoryPage() {
     },
     {
       key: 'availableForSale',
-      header: 'Ready for Sale',
+      header: 'Available to Sell',
       // All packed-and-undelivered cuttings (farm-packed + customer-packed). A
       // subset of Ending Qty, not an addition to it. A received cutting sale
       // reduces this; packing bare stock increases it.
@@ -549,15 +763,6 @@ export function InventoryPage() {
       ),
       sortValue: (i) => itemValue(i),
     },
-    {
-      key: 'notes',
-      header: 'Notes',
-      accessor: (i) => i.notes?.trim()
-        ? <span className="text-gray-600">{i.notes}</span>
-        : <span className="text-gray-300">—</span>,
-      sortValue: (i) => i.notes ?? '',
-      editable: { type: 'text', getValue: (i) => i.notes ?? '' },
-    },
   ];
 
   return (
@@ -566,19 +771,7 @@ export function InventoryPage() {
         title="Inventory"
         subtitle={`${items.length} item${items.length !== 1 ? 's' : ''} · Ending Qty = beginning + purchased − used − sold + packed + needs packing`}
         actions={
-          <div className="flex items-center gap-2">
-            {alerts.length > 0 && (
-              <Button
-                variant={showLowStockOnly ? 'primary' : 'outline'}
-                size="sm"
-                icon={<AlertTriangle className="w-4 h-4" />}
-                onClick={() => setShowLowStockOnly((v) => !v)}
-              >
-                {showLowStockOnly ? 'Show All' : `Low Stock (${alerts.length})`}
-              </Button>
-            )}
-            <Button icon={<Plus className="w-4 h-4" />} onClick={crud.openAdd}>Add Item</Button>
-          </div>
+          <Button icon={<Plus className="w-4 h-4" />} onClick={crud.openAdd}>Add Item</Button>
         }
       />
 
@@ -589,10 +782,19 @@ export function InventoryPage() {
         <StatCard
           title="Low Stock Alerts"
           value={alerts.length}
-          subtitle={alerts.length > 0 ? `Items at or below ${LOW_STOCK_THRESHOLD} units` : 'All items well stocked'}
+          subtitle={
+            alerts.length > 0
+              ? showLowStockOnly
+                ? `Showing ${alerts.length} low-stock item${alerts.length !== 1 ? 's' : ''} — click to show all`
+                : `Items at or below ${LOW_STOCK_THRESHOLD} units — click to filter`
+              : 'All items well stocked'
+          }
           icon={AlertTriangle}
           iconColor={alerts.length > 0 ? 'text-red-500' : 'text-leaf-600'}
           iconBg={alerts.length > 0 ? 'bg-red-50' : 'bg-leaf-50'}
+          titleColor={alerts.length > 0 ? 'text-red-600' : undefined}
+          valueColor={alerts.length > 0 ? 'text-red-600' : undefined}
+          onClick={alerts.length > 0 ? () => toggleLowStock(!showLowStockOnly) : undefined}
         />
       </div>
 
@@ -657,26 +859,12 @@ export function InventoryPage() {
         </CollapsibleSection>
       )}
 
-      {/* Low stock alert banner */}
-      {alerts.length > 0 && !showLowStockOnly && (
-        <SectionCard title="⚠️ Low Stock Items" subtitle="These items are running low and may need restocking">
-          <div className="flex flex-wrap gap-2">
-            {alerts.map((a) => (
-              <div key={a.id} className="flex items-center gap-2 px-3 py-1.5 bg-gold-50 border border-gold-200 rounded-lg">
-                <span className="text-sm font-medium text-gold-800">{a.subcategory}</span>
-                <Badge label={`${formatNumber(a.endingQty, 2)} ${a.unit}`} variant="yellow" />
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-      )}
-
       {/* Deep-link highlight banner (from the Cuttings "view inventory" link) */}
       {highlightVariety && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-primary-200 bg-primary-50 px-4 py-2.5">
           <p className="text-sm text-primary-800">
             {highlightedItem
-              ? <>Showing <span className="font-semibold">{highlightedItem.subcategory}</span> cuttings — <span className="font-semibold">{formatNumber(highlightedItem.availableForSale ?? 0, 0)}</span> Ready for Sale.</>
+              ? <>Showing <span className="font-semibold">{highlightedItem.subcategory}</span> cuttings — <span className="font-semibold">{formatNumber(highlightedItem.availableForSale ?? 0, 0)}</span> Available to Sell.</>
               : <>No cuttings inventory row found for "{searchParams.get('highlight')}".</>}
           </p>
           <button
@@ -685,6 +873,24 @@ export function InventoryPage() {
             className="text-xs font-medium text-primary-600 hover:text-primary-800 hover:underline flex-shrink-0"
           >
             Clear
+          </button>
+        </div>
+      )}
+
+      {/* Active low-stock filter banner — lets the user clear the filter */}
+      {showLowStockOnly && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-lg border border-red-200 bg-red-50 text-sm text-red-700">
+          <span>
+            Showing{' '}
+            <span className="font-semibold">{alerts.length}</span>{' '}
+            item{alerts.length !== 1 ? 's' : ''} at or below {LOW_STOCK_THRESHOLD} units.
+          </span>
+          <button
+            type="button"
+            onClick={() => toggleLowStock(false)}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md font-medium text-red-700 hover:bg-red-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+          >
+            <X className="w-3.5 h-3.5" /> Clear filter
           </button>
         </div>
       )}
@@ -705,7 +911,25 @@ export function InventoryPage() {
             onDismiss={() => setUndoSnapshot(null)}
           />
         )}
+        {addUndo && (
+          <UndoBar
+            message={addUndo.message}
+            onUndo={undoAddToProducts}
+            onDismiss={() => setAddUndo(null)}
+          />
+        )}
+        {packUndo && (
+          <UndoBar
+            message={packUndo.message}
+            onUndo={undoPack}
+            onDismiss={() => setPackUndo(null)}
+          />
+        )}
         <Table
+          // Remount when switching modes so the table re-seeds its search from
+          // the (just-cleared) persisted state for the active key — this keeps
+          // the visible low-stock rows equal to the KPI's `alerts.length`.
+          key={tablePersistKey}
           data={displayItems}
           columns={columns}
           keyExtractor={(i) => i.id}
@@ -743,17 +967,42 @@ export function InventoryPage() {
                   Produce
                 </Button>
               )}
+              {/* Low-stock tracking toggle: let the user mark an item "ok to be low"
+                  so it stops nagging as low stock (service categories are already
+                  auto-excluded, so the toggle is hidden for them). */}
+              {!isServiceCategory(i.category) && (
+                <button
+                  type="button"
+                  onClick={() => updateItem(i.id, { ignoreLowStock: !i.ignoreLowStock })}
+                  aria-pressed={!!i.ignoreLowStock}
+                  title={
+                    i.ignoreLowStock
+                      ? 'Low-stock alerts off — click to track low stock again'
+                      : 'Tracking low stock — click to mark "ok to be low"'
+                  }
+                  className={[
+                    'p-1 rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400',
+                    i.ignoreLowStock
+                      ? 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                      : 'text-gold-500 hover:text-gold-600 hover:bg-gold-50',
+                  ].join(' ')}
+                >
+                  {i.ignoreLowStock ? <BellOff className="w-3.5 h-3.5" /> : <Bell className="w-3.5 h-3.5" />}
+                </button>
+              )}
               <RowActions onEdit={() => crud.openEdit(i)} onDelete={() => crud.requestDelete(i)} />
             </div>
           )}
           bulkActions={{
             noun: 'item',
             actions: [
+              { label: 'Add to Products', icon: <PackagePlus className="w-4 h-4" />, onClick: openBulkAddToProducts, variant: 'primary' },
               { label: 'Set Beginning Qty', icon: <ListChecks className="w-4 h-4" />, onClick: openBulkBegin },
             ],
             onDelete: (rows) => rows.forEach((i) => deleteItem(i.id)),
           }}
           onCellEdit={(i, key, value) => updateItem(i.id, { [key]: value })}
+          persistKey={tablePersistKey}
           defaultSort={{ key: 'subcategory', dir: 'asc' }}
           getRecency={(i) => i.createdAt}
         />
@@ -796,17 +1045,75 @@ export function InventoryPage() {
         )}
       </Modal>
 
+      {/* Bulk "Add to Products" — turn selected inventory rows into sellable products */}
+      <Modal open={!!bulkAddRows} onClose={closeBulkAddToProducts} title="Add to Products" size="sm">
+        {bulkAddRows && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Add{' '}
+              <span className="font-medium text-gray-900">{toCreate.length}</span>{' '}
+              selected inventory item{toCreate.length !== 1 ? 's' : ''} to the Products catalog for
+              sale. Each product's cost is seeded from its inventory unit cost; the selling price is
+              left blank for you to set in Products. You can undo this right after.
+            </p>
+
+            {toCreate.length > 0 && (
+              <ul className="max-h-48 overflow-auto scrollbar-thin rounded-lg border border-gray-100 divide-y divide-gray-50">
+                {toCreate.map((i) => (
+                  <li key={i.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                    <span className="min-w-0 truncate text-gray-800">
+                      {categoryLabel(i.category, i.subcategory)}
+                    </span>
+                    <span className="flex-shrink-0 text-xs text-gray-500">
+                      {i.unitCost > 0 ? formatPHP(i.unitCost) : 'no cost'} / {i.unit || '—'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {(alreadyExist > 0 || skipped > 0) && (
+              <div className="space-y-1 text-xs text-gray-500">
+                {alreadyExist > 0 && (
+                  <p>
+                    {alreadyExist} selected item{alreadyExist !== 1 ? 's are' : ' is'} already in
+                    Products and will be left unchanged.
+                  </p>
+                )}
+                {skipped > 0 && (
+                  <p>
+                    {skipped} selected item{skipped !== 1 ? 's have' : ' has'} no variety set and
+                    can't be added.
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={closeBulkAddToProducts}>Cancel</Button>
+              <Button
+                icon={<PackagePlus className="w-4 h-4" />}
+                onClick={confirmBulkAddToProducts}
+                disabled={toCreate.length === 0}
+              >
+                {toCreate.length > 0 ? `Add ${toCreate.length} to Products` : 'Nothing to add'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       {/* Pack bare cuttings → Ready for Sale */}
       <Modal open={!!packTarget} onClose={closePack} title="Pack Cuttings" size="sm">
         {packTarget && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
               Move packed <span className="font-medium text-gray-900">{packTarget.subcategory}</span> cuttings
-              from <span className="font-medium">Needs Packing</span> into <span className="font-medium">Ready for Sale</span>.
+              from <span className="font-medium">Needs Packing</span> into <span className="font-medium">Available to Sell</span>.
               {' '}<span className="text-gray-500">{formatNumber(packTarget.needsPacking ?? 0, 0)} awaiting packing.</span>
             </p>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Quantity to pack</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Quantity packed</label>
               <input
                 type="number"
                 min="0"
@@ -987,6 +1294,24 @@ export function InventoryPage() {
           </div>
         )}
       </Modal>
+
+      {/* Cuttings usage that spills past Needs Packing into Packed stock —
+          confirm before drawing sellable packed cuttings down. */}
+      <ConfirmDialog
+        open={!!usagePackedWarn}
+        onClose={() => setUsagePackedWarn(null)}
+        onConfirm={() => {
+          usagePackedWarn?.apply();
+          setUsagePackedWarn(null);
+        }}
+        title="This will use packed cuttings"
+        message={
+          usagePackedWarn
+            ? `Only ${formatNumber(usagePackedWarn.needsPacking, 2)} need packing, but you're using ${formatNumber(usagePackedWarn.total, 2)}. The extra ${formatNumber(usagePackedWarn.fromPacked, 2)} will be deducted from packed (ready-for-sale) cuttings. Continue?`
+            : ''
+        }
+        confirmLabel="Use packed cuttings"
+      />
 
       {/* Produce finished goods from staged inputs */}
       <Modal open={!!produceTarget} onClose={closeProduce} title="Produce Finished Goods" size="sm">

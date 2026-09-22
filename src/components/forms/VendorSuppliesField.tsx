@@ -39,6 +39,7 @@ export function VendorSuppliesField({
 
   const [supCategory, setSupCategory] = useState('');
   const [selectedSubcategories, setSelectedSubcategories] = useState<string[]>([]);
+  const [subcategorySearch, setSubcategorySearch] = useState('');
 
   const categoryOptions = toOptions([...new Set(categoryEntries.map((e) => e.category))].sort());
   const subcategoryOptions = toOptions(
@@ -48,6 +49,15 @@ export function VendorSuppliesField({
         .map((e) => e.subcategory),
     )].sort(),
   );
+
+  // Filter the subcategory checkboxes by the search query. Any already-selected
+  // subcategory stays visible so the user never loses track of a checked item.
+  const query = subcategorySearch.trim().toLowerCase();
+  const visibleSubcategoryOptions = query
+    ? subcategoryOptions.filter(
+        (o) => o.label.toLowerCase().includes(query) || selectedSubcategories.includes(o.value),
+      )
+    : subcategoryOptions;
 
   const toggleSubcategory = (sub: string) => {
     setSelectedSubcategories((prev) =>
@@ -107,8 +117,8 @@ export function VendorSuppliesField({
               options={categoryOptions}
               placeholder="Select category…"
               value={supCategory}
-              onChange={(v) => { setSupCategory(v); setSelectedSubcategories([]); }}
-              onCreate={(v) => { addEntry(v, ''); syncTaxonomy(v, ''); setSupCategory(v); setSelectedSubcategories([]); }}
+              onChange={(v) => { setSupCategory(v); setSelectedSubcategories([]); setSubcategorySearch(''); }}
+              onCreate={(v) => { addEntry(v, ''); syncTaxonomy(v, ''); setSupCategory(v); setSelectedSubcategories([]); setSubcategorySearch(''); }}
               createLabel="+ Create new category…"
               newFieldLabel="New Category"
               newFieldPlaceholder="e.g. Irrigation"
@@ -117,7 +127,7 @@ export function VendorSuppliesField({
               value={supCategory}
               options={categoryOptions.map((o) => o.value)}
               noun="category"
-              onPick={(v) => { setSupCategory(v); setSelectedSubcategories([]); }}
+              onPick={(v) => { setSupCategory(v); setSelectedSubcategories([]); setSubcategorySearch(''); }}
             />
           </div>
           <div className="space-y-1.5">
@@ -125,20 +135,36 @@ export function VendorSuppliesField({
             {!supCategory ? (
               <p className="text-xs text-gray-400">Select a category first.</p>
             ) : subcategoryOptions.length > 0 ? (
-              <fieldset className="space-y-1">
-                <legend className="sr-only">Select subcategories for {supCategory}</legend>
-                {subcategoryOptions.map((opt) => (
-                  <label key={opt.value} className="flex items-center gap-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                      checked={selectedSubcategories.includes(opt.value)}
-                      onChange={() => toggleSubcategory(opt.value)}
-                    />
-                    {opt.label}
-                  </label>
-                ))}
-              </fieldset>
+              <>
+                {subcategoryOptions.length > 5 && (
+                  <input
+                    type="search"
+                    value={subcategorySearch}
+                    onChange={(e) => setSubcategorySearch(e.target.value)}
+                    placeholder="Search subcategories…"
+                    aria-label={`Search subcategories for ${supCategory}`}
+                    className="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  />
+                )}
+                {visibleSubcategoryOptions.length > 0 ? (
+                  <fieldset className="space-y-1 max-h-40 overflow-y-auto scrollbar-thin">
+                    <legend className="sr-only">Select subcategories for {supCategory}</legend>
+                    {visibleSubcategoryOptions.map((opt) => (
+                      <label key={opt.value} className="flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                          checked={selectedSubcategories.includes(opt.value)}
+                          onChange={() => toggleSubcategory(opt.value)}
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                  </fieldset>
+                ) : (
+                  <p className="text-xs text-gray-400">No subcategories match "{subcategorySearch.trim()}".</p>
+                )}
+              </>
             ) : (
               <p className="text-xs text-gray-400">No subcategories yet for this category.</p>
             )}

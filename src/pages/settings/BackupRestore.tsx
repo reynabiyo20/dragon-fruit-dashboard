@@ -14,6 +14,7 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import {
   downloadBackup, backupKeyCount, parseBackup, restoreBackup, type ParsedBackup,
 } from '../../utils/backup';
+import { ENTITY, toastSuccess, toastError } from '../../constants/messages';
 
 export function BackupRestore() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -23,9 +24,9 @@ export function BackupRestore() {
   const handleExport = () => {
     try {
       downloadBackup();
-      toast.success('Backup downloaded');
+      toast.success(toastSuccess(ENTITY.backup, 'created'));
     } catch {
-      toast.error('Could not create the backup file.');
+      toast.error(toastError('backup', 'created'));
     }
   };
 
@@ -53,11 +54,11 @@ export function BackupRestore() {
     if (!pending) return;
     try {
       restoreBackup(pending.file);
-      toast.success('Backup restored — reloading…');
+      toast.success(`${toastSuccess(ENTITY.backup, 'restored')} — reloading…`);
       // Reload so every store re-hydrates from the restored localStorage.
       setTimeout(() => window.location.reload(), 600);
     } catch {
-      toast.error('Restore failed.');
+      toast.error(toastError('backup', 'restored'));
     } finally {
       setPending(null);
     }

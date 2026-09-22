@@ -12,9 +12,8 @@ import {
   PieChart, Pie, Cell,
 } from 'recharts';
 import { SectionCard } from '../../../components/ui/SectionCard';
-import { Badge } from '../../../components/ui/Badge';
 import { formatPHP } from '../../../utils/format';
-import { CHART_REVENUE, CHART_EXPENSE, PIE_COLORS } from '../../../constants/chartColors';
+import { CHART_REVENUE, CHART_EXPENSE, PIE_COLORS, BRAND } from '../../../constants/chartColors';
 import {
   AXIS_TICK, AXIS_LINE, GRID_STROKE,
   TOOLTIP_CONTENT_STYLE, TOOLTIP_LABEL_STYLE, TOOLTIP_ITEM_STYLE,
@@ -28,10 +27,11 @@ interface ProfitabilityMatrixProps {
   statusDistribution: { status: string; quantity: number }[];
 }
 
-function marginVariant(pct: number): 'green' | 'yellow' | 'red' {
-  if (pct >= 30) return 'green';
-  if (pct >= 10) return 'yellow';
-  return 'red';
+/** Bar fill by margin band: green ≥30%, gold ≥10%, red below (or negative). */
+function marginBarColor(pct: number): string {
+  if (pct >= 30) return BRAND.leaf;
+  if (pct >= 10) return BRAND.gold;
+  return '#ef4444';
 }
 
 export function ProfitabilityMatrix({ varietyProfit, statusDistribution }: ProfitabilityMatrixProps) {
@@ -104,37 +104,47 @@ export function ProfitabilityMatrix({ varietyProfit, statusDistribution }: Profi
         )}
       </SectionCard>
 
-      {/* Profit margin % by variety */}
+      {/* Profit margin % by variety — color-coded bars (green ≥30, yellow ≥10, red <10) */}
       <SectionCard title="Profit Margin % by Variety" subtitle="High-value vs low-margin crops" className="xl:col-span-3">
         {!hasSales ? (
           <EmptyChart message="No sales yet." />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-primary-100 bg-primary-50">
-                  {['Variety', 'Revenue', 'Operating Cost', 'Profit', 'Margin %'].map((h) => (
-                    <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-primary-800 uppercase tracking-wider">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
+          <ResponsiveContainer width="100%" height={Math.max(200, varietyProfit.length * 40)}>
+            <BarChart
+              layout="vertical"
+              data={varietyProfit}
+              margin={{ top: 5, right: 40, left: 10, bottom: 0 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} horizontal={false} />
+              <XAxis
+                type="number"
+                tick={AXIS_TICK}
+                axisLine={AXIS_LINE}
+                tickLine={false}
+                tickFormatter={(v) => `${v}%`}
+              />
+              <YAxis
+                type="category"
+                dataKey="variety"
+                tick={AXIS_TICK}
+                axisLine={AXIS_LINE}
+                tickLine={false}
+                width={110}
+              />
+              <Tooltip
+                formatter={(v) => [`${Number(v).toFixed(1)}%`, 'Margin']}
+                cursor={{ fill: 'rgba(106, 58, 103, 0.06)' }}
+                contentStyle={TOOLTIP_CONTENT_STYLE}
+                labelStyle={TOOLTIP_LABEL_STYLE}
+                itemStyle={TOOLTIP_ITEM_STYLE}
+              />
+              <Bar dataKey="marginPct" name="Margin %" radius={[0, 3, 3, 0]}>
                 {varietyProfit.map((v) => (
-                  <tr key={v.variety} className="hover:bg-primary-50/50">
-                    <td className="px-4 py-2.5 font-medium text-gray-900">{v.variety}</td>
-                    <td className="px-4 py-2.5 text-leaf-700 font-medium">{formatPHP(v.revenue)}</td>
-                    <td className="px-4 py-2.5 text-red-600">{formatPHP(v.cost)}</td>
-                    <td className={`px-4 py-2.5 font-semibold ${v.profit >= 0 ? 'text-leaf-700' : 'text-red-600'}`}>
-                      {formatPHP(v.profit)}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <Badge label={`${v.marginPct.toFixed(1)}%`} variant={marginVariant(v.marginPct)} />
-                    </td>
-                  </tr>
+                  <Cell key={v.variety} fill={marginBarColor(v.marginPct)} />
                 ))}
-              </tbody>
-            </table>
-          </div>
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         )}
       </SectionCard>
     </div>

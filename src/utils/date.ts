@@ -1,5 +1,5 @@
 import { addDays, getWeekOfMonth, isValid, parseISO, format } from 'date-fns';
-import { FRUIT_DAYS_FLOWER_TO_HARVEST } from '../constants';
+import { FRUIT_DAYS_FLOWER_TO_HARVEST, FARM_STAGE_FLOWERING } from '../constants';
 
 /** Today's date as an ISO date string (YYYY-MM-DD), local time. */
 export function todayISO(): string {
@@ -42,6 +42,20 @@ export function estimateHarvestWindow(floweringDate: string | undefined): Harves
     week,
     label: `${month}, Week ${week}`,
   };
+}
+
+/**
+ * Area-level harvest-window estimate for a farm section. A section only carries
+ * an estimate when it's been tagged FLOWERING (from a walk-through scan) with a
+ * stage date — flowering + ~30 days → the month/week it should fruit. Any other
+ * stage (Vegetative / Fruiting / Dormant / Mixed) or a missing date returns null,
+ * so we never imply an estimate the tag doesn't support.
+ */
+export function sectionHarvestWindow(
+  section: { lifecycleStage?: string; stageDate?: string } | undefined,
+): HarvestWindow | null {
+  if (!section || section.lifecycleStage !== FARM_STAGE_FLOWERING) return null;
+  return estimateHarvestWindow(section.stageDate);
 }
 
 /**

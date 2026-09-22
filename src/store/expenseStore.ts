@@ -1,9 +1,15 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Expense } from '../types';
+import type { Expense, Currency } from '../types';
 import { generateId, now } from '../utils/id';
 import { categoryLabel } from '../utils/format';
-import { recordExpenseInventory, reverseExpenseInventory } from './inventoryLink';
+import {
+  recordExpenseInventory, reverseExpenseInventory,
+  recordExpenseReplantBatch, reverseExpenseReplantBatch,
+} from './inventoryLink';
+
+/** Bucket for expenses missing an accounting classification / expense type. */
+export const UNCLASSIFIED_LABEL = 'Unclassified';
 
 /**
  * A stable string of just the fields that feed inventory `purchased` (category,
@@ -12,9 +18,12 @@ import { recordExpenseInventory, reverseExpenseInventory } from './inventoryLink
  * the signature unchanged (e.g. editing Notes) needs no inventory reconciliation.
  */
 function purchaseSignature(e: Expense): string {
-  const flat = `${e.category}|${e.subcategory}|${e.quantity ?? 0}|${e.unit ?? ''}|${e.unitPrice ?? 0}|${e.cuttingState ?? ''}`;
+  // Include cuttingType, vendor, and date too: for a "replant" cutting expense
+  // these feed the Propagation batch (cost/type/vendor/planting date), so a change
+  // to any of them must trigger the reverse/re-record reconcile.
+  const flat = `${e.category}|${e.subcategory}|${e.quantity ?? 0}|${e.unit ?? ''}|${e.unitPrice ?? 0}|${e.cuttingState ?? ''}|${e.cuttingType ?? ''}|${e.vendorId ?? ''}|${e.date ?? ''}`;
   const items = (e.items ?? [])
-    .map((it) => `${it.category}|${it.subcategory}|${it.quantity}|${it.unit ?? ''}|${it.unitPrice ?? 0}|${it.cuttingState ?? ''}`)
+    .map((it) => `${it.category}|${it.subcategory}|${it.quantity}|${it.unit ?? ''}|${it.unitPrice ?? 0}|${it.cuttingState ?? ''}|${it.cuttingType ?? ''}`)
     .join(';');
   return `${flat}#${items}`;
 }
@@ -100,8 +109,20 @@ interface ExpenseState {
   updateExpense: (id: string, data: Partial<Omit<Expense, 'id' | 'createdAt'>>) => void;
   deleteExpense: (id: string) => void;
   getExpense: (id: string) => Expense | undefined;
-  totalExpenses: () => number;
+  /** Total spend for a currency (default 'PHP'). PHP and USD are never mixed. */
+  totalExpenses: (currency?: Currency) => number;
   totalByCategory: () => Record<string, number>;
+  /**
+   * Total spend grouped by accounting classification (CapEx / OpEx / COGS …).
+   * The classification is an expense-level bookkeeping attribute, so the whole
+   * amount is attributed to it. Expenses without one fall into `Unclassified`.
+   */
+  totalByAccountingClassification: () => Record<string, number>;
+  /**
+   * Total spend grouped by expense type / cost behavior (Fixed / Variable /
+   * Semi-Variable …). Expenses without one fall into `Unclassified`.
+   */
+  totalByExpenseType: () => Record<string, number>;
   /**
    * Most recent unit price recorded for a supply, for prefill.
    * Prefers a match on the same vendor; falls back to any vendor.
@@ -138,6 +159,9 @@ export const useExpenseStore = create<ExpenseState>()(
         set((state) => ({ expenses: [...state.expenses, expense] }));
         // Add purchased material quantities to inventory (warns on unmatched).
         recordExpenseInventory(expense);
+        // Cuttings flagged "For replant" create a Propagation batch (source
+        // Purchased) instead of a sellable pool — kept in sync here.
+        recordExpenseReplantBatch(expense);
         return expense;
       },
 
@@ -145,6 +169,21 @@ export const useExpenseStore = create<ExpenseState>()(
         // Reverse the previous purchase's inventory effect, then apply the new
         // one, so editing an expense keeps inventory `purchased` consistent.
         const prev = get().expenses.find((e) => e.id === id);
+        // A Paid expense is locked: its recorded amount/vendor/items must not
+        // drift after money changed hands. The only edit permitted on a paid
+        // row is the status itself (paid → false), which unlocks it. Any patch
+        // that would change other fields while the row stays paid is rejected.
+        if (prev?.paid) {
+          const keys = Object.keys(data) as (keyof typeof data)[];
+          const staysPaid = data.paid !== false;
+          const changesOtherFields = keys.some((k) => k !== 'paid');
+          if (staysPaid && changesOtherFields) {
+            if (import.meta.env.DEV) {
+              console.warn(`[expenseStore] Blocked edit to paid expense ${id}. Set it to Pending first.`);
+            }
+            return;
+          }
+        }
         let next: Expense | undefined;
         set((state) => ({
           expenses: state.expenses.map((e) => {
@@ -165,26 +204,60 @@ export const useExpenseStore = create<ExpenseState>()(
         if (prev && next && purchaseSignature(prev) !== purchaseSignature(next)) {
           reverseExpenseInventory(prev);
           recordExpenseInventory(next);
+          // Keep the Propagation replant batch in step: reverse the old batch
+          // (also cleans up when a line changed away from replant), then record
+          // the new one. recordVendorPurchase is idempotent by expense id +
+          // variety, so a replant line that's unchanged updates in place.
+          reverseExpenseReplantBatch(prev);
+          recordExpenseReplantBatch(next);
         }
       },
 
       deleteExpense: (id) => {
         const target = get().expenses.find((e) => e.id === id);
+        // A Paid expense is locked from deletion — deleting it would silently
+        // reverse its inventory/dashboard/KPI effects after money changed
+        // hands. The user must set it to Pending first to unlock deletion.
+        if (target?.paid) {
+          if (import.meta.env.DEV) {
+            console.warn(`[expenseStore] Blocked delete of paid expense ${id}. Set it to Pending first.`);
+          }
+          return;
+        }
         set((state) => ({ expenses: state.expenses.filter((e) => e.id !== id) }));
         // Remove the previously-added purchased quantity from inventory.
         if (target) reverseExpenseInventory(target);
+        // Remove any Propagation replant batch this expense created.
+        if (target) reverseExpenseReplantBatch(target);
       },
 
       getExpense: (id) => get().expenses.find((e) => e.id === id),
 
-      totalExpenses: () => get().expenses.reduce((sum, e) => sum + e.amount, 0),
+      totalExpenses: (currency = 'PHP') =>
+        get().expenses.filter((e) => (e.currency ?? 'PHP') === currency).reduce((sum, e) => sum + e.amount, 0),
 
+      // Category / classification / type breakdowns are PHP-only so charts never
+      // mix currencies. International (USD) spend is reported separately.
       totalByCategory: () =>
-        get().expenses.reduce<Record<string, number>>((acc, e) => {
+        get().expenses.filter((e) => (e.currency ?? 'PHP') === 'PHP').reduce<Record<string, number>>((acc, e) => {
           const byCat = amountByCategory(e);
           for (const [label, amt] of Object.entries(byCat)) {
             acc[label] = (acc[label] ?? 0) + amt;
           }
+          return acc;
+        }, {}),
+
+      totalByAccountingClassification: () =>
+        get().expenses.filter((e) => (e.currency ?? 'PHP') === 'PHP').reduce<Record<string, number>>((acc, e) => {
+          const label = (e.accountingClassification ?? '').trim() || UNCLASSIFIED_LABEL;
+          acc[label] = (acc[label] ?? 0) + e.amount;
+          return acc;
+        }, {}),
+
+      totalByExpenseType: () =>
+        get().expenses.filter((e) => (e.currency ?? 'PHP') === 'PHP').reduce<Record<string, number>>((acc, e) => {
+          const label = (e.expenseType ?? '').trim() || UNCLASSIFIED_LABEL;
+          acc[label] = (acc[label] ?? 0) + e.amount;
           return acc;
         }, {}),
 

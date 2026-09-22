@@ -29,7 +29,9 @@ describe('cuttings purchase → inventory pool routing', () => {
       date: '2026-01-01', vendorId: 'v1', vendorName: 'Acme',
       category: CUTTINGS_PRODUCT_TYPE, subcategory: 'Thai White', description: '',
       quantity: 20, unit: 'piece', unitPrice: 35, amount: 700,
-      paymentMethod: 'Cash', paid: true, notes: '',
+      // Pending, not paid: paid expenses are locked from edit/delete, so the
+      // cascade fixtures use an unpaid (editable/deletable) expense.
+      paymentMethod: 'Cash', paid: false, notes: '',
       ...over,
     };
   }
@@ -83,6 +85,36 @@ describe('cuttings purchase → inventory pool routing', () => {
     const after = row('Thai White')!;
     expect(after.needsPacking).toBe(0);
     expect(after.packed).toBe(5);
+  });
+
+  it('unpackCuttings reverses a pack: packed + Ready for Sale → Needs Packing', () => {
+    useExpenseStore.getState().addExpense(cuttingExpense({ cuttingState: 'bare', quantity: 20 }));
+    const r = row('Thai White')!;
+    useInventoryStore.getState().packCuttings(r.id, 12);
+    expect(row('Thai White')?.packed).toBe(12);
+
+    const moved = useInventoryStore.getState().unpackCuttings(r.id, 12);
+    expect(moved).toBe(12);
+    const after = row('Thai White')!;
+    expect(after.packed).toBe(0);
+    expect(after.availableForSale).toBe(0);
+    expect(after.needsPacking).toBe(20);   // fully back to bare
+    expect(after.endingQty).toBe(20);      // unchanged throughout
+  });
+
+  it('unpackCuttings only reverses the still-unsold portion', () => {
+    useExpenseStore.getState().addExpense(cuttingExpense({ cuttingState: 'bare', quantity: 20 }));
+    const r = row('Thai White')!;
+    useInventoryStore.getState().packCuttings(r.id, 20);
+    // Simulate 8 of the packed cuttings already sold/delivered (leaves 12 available).
+    useInventoryStore.getState().adjustAvailableForSale(r.id, -8);
+    expect(row('Thai White')?.availableForSale).toBe(12);
+
+    const moved = useInventoryStore.getState().unpackCuttings(r.id, 20);
+    expect(moved).toBe(12); // clamped to the unsold remainder
+    const after = row('Thai White')!;
+    expect(after.availableForSale).toBe(0);
+    expect(after.needsPacking).toBe(12);
   });
 
   it('reversing a bare cuttings expense removes it from Needs Packing', () => {

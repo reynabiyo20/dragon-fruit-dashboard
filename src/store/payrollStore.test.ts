@@ -211,3 +211,25 @@ describe('isEmptyPayrollLine', () => {
     expect(isEmptyPayrollLine(line({ daysWorked: 0.5 }))).toBe(false);
   });
 });
+
+describe('payrollStore labor breakdowns', () => {
+  it('groups net pay by labor type, pooling missing into Unclassified', () => {
+    store().addEntry(input({ employeeName: 'Don', daysWorked: 5, rate: 100, laborType: 'Direct Labor' }));   // 500
+    store().addEntry(input({ employeeName: 'Aljun', daysWorked: 3, rate: 100, laborType: 'Direct Labor' })); // 300
+    store().addEntry(input({ employeeName: 'Ping', daysWorked: 4, rate: 100, laborType: 'Indirect Labor' })); // 400
+    store().addEntry(input({ employeeName: 'Ghost', daysWorked: 1, rate: 100 })); // no laborType → 100
+    const totals = store().totalByLaborType();
+    expect(totals['Direct Labor']).toBe(800);
+    expect(totals['Indirect Labor']).toBe(400);
+    expect(totals['Unclassified']).toBe(100);
+  });
+
+  it('groups net pay by accounting classification', () => {
+    store().addEntry(input({ daysWorked: 5, rate: 100, accountingClassification: 'Cost of Goods Sold (COGS)' })); // 500
+    store().addEntry(input({ daysWorked: 2, rate: 100, accountingClassification: 'Operating Expense (OpEx) / Overhead' })); // 200
+    store().addEntry(input({ daysWorked: 3, rate: 100, accountingClassification: 'Operating Expense (OpEx) / Overhead' })); // 300
+    const totals = store().totalByAccountingClassification();
+    expect(totals['Cost of Goods Sold (COGS)']).toBe(500);
+    expect(totals['Operating Expense (OpEx) / Overhead']).toBe(500);
+  });
+});

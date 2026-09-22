@@ -3,9 +3,10 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
-import type { Expense, ExpenseItem, Vendor, VendorSupply } from '../../types';
+import type { Expense, ExpenseItem, Vendor, VendorSupply, Currency } from '../../types';
 import { useExpenseStore } from '../../store/expenseStore';
 import { useVendorStore } from '../../store/vendorStore';
+import { useVendorProductStore } from '../../store/vendorProductStore';
 import { useProductStore } from '../../store/productStore';
 import { useExpenseCategoryStore } from '../../store/expenseCategoryStore';
 import { useEntityMatch } from '../../hooks/useEntityMatch';
@@ -16,18 +17,26 @@ import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import { VendorSuppliesField } from '../../components/forms/VendorSuppliesField';
 import { Button } from '../../components/ui/Button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { formatPHP, formatDate, categoryLabel } from '../../utils/format';
+import { formatPHP, formatUSD, formatDate, categoryLabel } from '../../utils/format';
+import { isInternationalLocation } from '../../constants/geography';
 import { isFutureDate, todayISO } from '../../utils/date';
 import { useUnitStore, useAccountingClassificationStore, useExpenseTypeStore } from '../../store/optionStores';
-import { PAYMENT_OPTIONS, MANUAL_ENTRY, INVENTORY_LINKED_TYPES, CUTTINGS_PRODUCT_TYPE } from '../../constants';
+import { PAYMENT_OPTIONS, METHODS_REQUIRING_DETAILS, MANUAL_ENTRY, INVENTORY_LINKED_TYPES, CUTTINGS_PRODUCT_TYPE, FRUIT_PRODUCT_TYPE, CUTTING_TYPE_OPTIONS, CUTTING_TYPE_GRAFTED, isServiceCategory } from '../../constants';
+import type { CuttingPurchaseState } from '../../types';
+import { AlertCircle } from 'lucide-react';
+import { ENTITY, toastSuccess, VALIDATION, FIELD } from '../../constants/messages';
 import { syncTaxonomy } from '../../store/taxonomySync';
 import { unlinkResellProduct } from '../../store/productLink';
+import { useExpenseDraftStore, type ProductDraft } from '../../store/expenseDraftStore';
 
 /** Categories whose purchases always cascade into the sellable Products list. */
 const ALWAYS_RESELL_CATEGORIES = INVENTORY_LINKED_TYPES as readonly string[];
 import { ProductItemsPicker } from './ProductItemsPicker';
+import { ServiceExpenseForm } from './ServiceExpenseForm';
 
 type ExpenseMode = 'single' | 'itemized';
+/** Top-level Add Expense choice: a physical product/material vs a service. */
+type ExpenseKind = 'product' | 'service';
 
 /**
  * Categories where a formal vendor is NOT required — services, utilities, and
@@ -36,14 +45,20 @@ type ExpenseMode = 'single' | 'itemized';
  */
 const OPTIONAL_VENDOR_CATEGORIES = [
   'Delivery',
-  'Electricity',
-  'Water',
+  'Utilities', // Electricity / Water / Internet — provider captured by subcategory
   'Gas',
   'Air Fare',
   'Operational Transportation',
   'Meals',
   'Other',
 ];
+
+/**
+ * Categories whose purchases must specify a variety (subcategory): Cuttings and
+ * Fruit are always bought as a specific variety and map 1:1 onto inventory/
+ * product rows, so a bare category with no subcategory is never valid.
+ */
+const SUBCATEGORY_REQUIRED_CATEGORIES = [CUTTINGS_PRODUCT_TYPE, FRUIT_PRODUCT_TYPE] as const;
 
 /** Delivery uses From / To / Price instead of Quantity / Unit Price */
 const DELIVERY_CATEGORY = 'Delivery';
@@ -60,7 +75,7 @@ const schema = z
     // Single-line vs itemized. Category/amount/vendor validation below is
     // enforced only in single mode; itemized mode validates its own line items.
     mode: z.enum(['single', 'itemized']),
-    date: z.string().min(1, 'Date is required'),
+    date: z.string().min(1, VALIDATION.dateRequired),
     vendorId: z.string(),
     vendorName: z.string(),
     category: z.string(),
@@ -72,15 +87,39 @@ const schema = z
     deliveryTo: z.string(),
     amount: z.coerce.number().min(0),
     description: z.string(),
-    paymentMethod: z.string().min(1, 'Payment method is required'),
+    // Payment method/details are only required when the expense is PAID — an
+    // unpaid (Pending) expense flows to Outstanding without a method.
+    paymentMethod: z.string(),
+    paymentDetails: z.string(),
+    paid: z.boolean(),
     accountingClassification: z.string(),
     expenseType: z.string(),
     notes: z.string(),
   })
   .superRefine((d, ctx) => {
+    // Payment validation applies to BOTH modes and is gated on `paid`:
+    //  1. A paid expense must have a payment method.
+    //  2. Certain methods (Bank Transfer, Gcash, Zelle, Check) also require
+    //     payment details — but only when paid.
+    if (d.paid) {
+      if (d.paymentMethod.trim().length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['paymentMethod'], message: VALIDATION.paymentMethodRequired });
+      }
+      if (METHODS_REQUIRING_DETAILS.includes(d.paymentMethod) && d.paymentDetails.trim().length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['paymentDetails'], message: 'Payment details are required for this payment method' });
+      }
+    }
+
     if (d.mode === 'itemized') return; // itemized validates line items separately
     if (d.category.trim().length === 0) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['category'], message: 'Category is required' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['category'], message: VALIDATION.categoryRequired });
+    }
+    // Cuttings and Fruit purchases are always tied to a specific variety, so a
+    // subcategory (the variety) is mandatory for these categories — they map 1:1
+    // onto inventory/product rows and can't be recorded against the bare category.
+    if (SUBCATEGORY_REQUIRED_CATEGORIES.some((c) => c.toLowerCase() === d.category.trim().toLowerCase())
+      && d.subcategory.trim().length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['subcategory'], message: VALIDATION.subcategoryRequired });
     }
     // The effective amount is derived from Quantity × Price when both are set
     // (the quantifiable path, where Amount is read-only), otherwise the amount
@@ -91,18 +130,18 @@ const schema = z
     // When the user has started a quantifiable line (entered a quantity OR a
     // price) point the error at the missing input rather than the derived amount.
     if (qty > 0 && price <= 0) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['unitPrice'], message: 'Price is required' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['unitPrice'], message: VALIDATION.priceRequired });
     } else if (price > 0 && qty <= 0) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['quantity'], message: 'Quantity is required' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['quantity'], message: VALIDATION.quantityRequired });
     } else {
       const effectiveAmount = qty > 0 && price > 0 ? qty * price : Number(d.amount) || 0;
       if (effectiveAmount < 0.01) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['amount'], message: 'Amount must be greater than 0' });
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['amount'], message: VALIDATION.amountPositive });
       }
     }
     // Vendor required only for categories that aren't in the optional list
     if (!OPTIONAL_VENDOR_CATEGORIES.includes(d.category) && d.vendorName.trim().length === 0) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['vendorName'], message: 'Vendor is required for this category' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['vendorName'], message: VALIDATION.vendorRequired });
     }
   });
 
@@ -127,9 +166,28 @@ interface ExpenseFormProps {
 }
 
 export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
+  // ── In-progress draft (new expenses only) ────────────────────────────────────
+  // Only NEW expenses are drafted; editing works off the saved record. We read
+  // the persisted draft ONCE at mount (via a ref-stable snapshot) so its values
+  // seed the useState / RHF initializers below — restoring through initializers
+  // (not post-mount setValue) keeps the category/vendor "reset" effects from
+  // treating a restore as a user edit and wiping dependent fields.
+  const draftStore = useExpenseDraftStore;
+  const isNew = !expense;
+  const draftSnapshot = useRef(isNew ? draftStore.getState() : null);
+  const productDraft = draftSnapshot.current?.product ?? {};
+  const patchProductDraft = useExpenseDraftStore((s) => s.patchProduct);
+  const setDraftKind = useExpenseDraftStore((s) => s.setKind);
+  const clearDraft = useExpenseDraftStore((s) => s.clear);
+
   const { addExpense, updateExpense, latestUnitPrice } = useExpenseStore();
   const { vendors, addVendor, addSupply } = useVendorStore();
-  const { categories, subcategoriesFor, addEntry, isQuantifiable } = useExpenseCategoryStore();
+  const { categories, subcategoriesFor, addEntry, isQuantifiable, bookkeepingFor } = useExpenseCategoryStore();
+  // Vendor-product catalog — used to persist a new/edited itemized line's unit +
+  // default price so a product not yet in the catalog is saved for next time.
+  const addVendorProduct = useVendorProductStore((s) => s.addProduct);
+  const linkVendorPrice = useVendorProductStore((s) => s.linkVendorPrice);
+  const updateVendorProduct = useVendorProductStore((s) => s.updateProduct);
   const unitOptions = useUnitStore((s) => s.values).map((v) => ({ value: v, label: v }));
   const addUnit = useUnitStore((s) => s.add);
   const acOptions = useAccountingClassificationStore((s) => s.values).map((v) => ({ value: v, label: v }));
@@ -138,51 +196,79 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
   const addExpenseType = useExpenseTypeStore((s) => s.add);
   const upsertSellableProduct = useProductStore((s) => s.upsertFromPurchase);
   const findSellableProduct = useProductStore((s) => s.findByCategorySub);
-  const [isPaid, setIsPaid] = useState(expense?.paid ?? false);
+  // Full product list — used to constrain the single-expense subcategory dropdown
+  // to real product varieties when the category is also a product type.
+  const productList = useProductStore((s) => s.products);
+  const [isPaid, setIsPaid] = useState(productDraft.isPaid ?? expense?.paid ?? false);
   // "We resell this" — cascades a quantifiable purchase into the sellable Products
   // list. Defaults on when editing an expense whose product already exists there.
   const [isResell, setIsResell] = useState(
-    !!expense && !!findSellableProduct(expense.category, expense.subcategory),
+    productDraft.isResell ?? (!!expense && !!findSellableProduct(expense.category, expense.subcategory)),
   );
-  // Cuttings only: whether the purchased cuttings arrive packed (ready to sell)
-  // or bare (still need packing). Defaults to 'packed'. Drives which inventory
-  // pool the quantity lands in (packed/Ready-for-Sale vs needsPacking).
-  const [cuttingState, setCuttingState] = useState<'packed' | 'bare'>(
-    expense?.cuttingState ?? 'packed',
+  // Cuttings only: what the purchased cuttings are for. Defaults to 'packed'.
+  //  - 'packed'/'bare' → sellable inventory pool (Ready for Sale / Needs Packing)
+  //  - 'replant'       → creates a Propagation batch (For Replant lifecycle)
+  const [cuttingState, setCuttingState] = useState<CuttingPurchaseState>(
+    productDraft.cuttingState ?? expense?.cuttingState ?? 'packed',
+  );
+  // Cuttings + replant only: the cutting type of the purchased cuttings, so the
+  // Propagation batch tracks the right rooting/ready timeline.
+  const [cuttingType, setCuttingType] = useState<string>(
+    productDraft.cuttingType ?? expense?.cuttingType ?? CUTTING_TYPE_GRAFTED,
   );
   // Holds validated form data pending a future-date confirmation (null = none)
   const [pendingFutureData, setPendingFutureData] = useState<FormValues | null>(null);
 
   // Itemized (multi-item, product-based) vs single (category/service) mode.
   const hasExistingItems = !!expense?.items && expense.items.length > 0;
-  const [mode, setMode] = useState<ExpenseMode>(hasExistingItems ? 'itemized' : 'single');
-  const [items, setItems] = useState<ExpenseItem[]>(expense?.items ?? []);
+  // Top-level Product vs Service. On edit, a single-line expense whose category
+  // is a service category reopens in the Service form; everything else is a
+  // Product. A new expense restores the last-open kind from the draft, else
+  // defaults to Product.
+  const [kind, setKind] = useState<ExpenseKind>(
+    expense
+      ? (!hasExistingItems && isServiceCategory(expense.category) ? 'service' : 'product')
+      : (draftSnapshot.current?.kind ?? 'product'),
+  );
+  const [mode, setMode] = useState<ExpenseMode>(
+    hasExistingItems ? 'itemized' : (productDraft.mode ?? 'single'),
+  );
+  const [items, setItems] = useState<ExpenseItem[]>(productDraft.items ?? expense?.items ?? []);
   const [itemsError, setItemsError] = useState('');
 
-  const categoryOptions = categories().map((c) => ({ value: c, label: c }));
+  // Product mode lists only NON-service categories — services are recorded via
+  // the Service form (the Product/Service chooser above).
+  const categoryOptions = categories()
+    .filter((c) => !isServiceCategory(c))
+    .map((c) => ({ value: c, label: c }));
 
-  const { register, handleSubmit, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
+  const { register, handleSubmit, setValue, watch, getValues, trigger, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
+    mode: 'onTouched',
+    // Restore any in-progress draft first (new expenses only), then fall back to
+    // the edited record's values, then to blank/today defaults.
     defaultValues: {
-      mode: hasExistingItems ? 'itemized' : 'single',
-      date: expense?.date ?? todayISO(),
-      vendorId: expense?.vendorId ?? '',
-      vendorName: expense?.vendorName ?? '',
+      mode: hasExistingItems ? 'itemized' : (productDraft.mode ?? 'single'),
+      date: productDraft.date ?? expense?.date ?? todayISO(),
+      vendorId: productDraft.vendorId ?? expense?.vendorId ?? '',
+      vendorName: productDraft.vendorName ?? expense?.vendorName ?? '',
       // Top-level category (the combined "Cat – Sub" label is derived at display time).
-      category: expense?.category || '',
-      subcategory: expense?.subcategory ?? '',
-      quantity: expense?.quantity ?? 0,
-      unit: expense?.unit ?? '',
-      unitPrice: expense?.unitPrice ?? 0,
+      category: productDraft.category ?? expense?.category ?? '',
+      subcategory: productDraft.subcategory ?? expense?.subcategory ?? '',
+      quantity: productDraft.quantity ?? expense?.quantity ?? 0,
+      unit: productDraft.unit ?? expense?.unit ?? '',
+      unitPrice: productDraft.unitPrice ?? expense?.unitPrice ?? 0,
       // Recover the delivery/air-fare route from the saved description on edit
-      deliveryFrom: parseDeliveryRoute(expense?.description ?? '').from,
-      deliveryTo: parseDeliveryRoute(expense?.description ?? '').to,
-      amount: expense?.amount ?? 0,
-      description: expense?.description ?? '',
-      paymentMethod: expense?.paymentMethod ?? 'Cash',
-      accountingClassification: expense?.accountingClassification ?? '',
-      expenseType: expense?.expenseType ?? '',
-      notes: expense?.notes ?? '',
+      deliveryFrom: productDraft.deliveryFrom ?? parseDeliveryRoute(expense?.description ?? '').from,
+      deliveryTo: productDraft.deliveryTo ?? parseDeliveryRoute(expense?.description ?? '').to,
+      amount: productDraft.amount ?? expense?.amount ?? 0,
+      description: productDraft.description ?? expense?.description ?? '',
+      paymentMethod: productDraft.paymentMethod ?? expense?.paymentMethod ?? 'Cash',
+      paymentDetails: productDraft.paymentDetails ?? expense?.paymentDetails ?? '',
+      paid: productDraft.paid ?? expense?.paid ?? false,
+      accountingClassification: productDraft.accountingClassification ?? expense?.accountingClassification ?? '',
+      expenseType: productDraft.expenseType ?? expense?.expenseType ?? '',
+      notes: productDraft.notes ?? expense?.notes ?? '',
     },
   });
 
@@ -192,6 +278,20 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
     setItemsError('');
   }, [mode, setValue]);
 
+  // ── Draft capture (new expenses only) ────────────────────────────────────────
+  // Persist RHF field changes to the draft store as the user types, so a
+  // half-filled new expense survives closing the modal or navigating away.
+  useEffect(() => {
+    if (!isNew) return;
+    const sub = watch((values) => patchProductDraft(values as ProductDraft));
+    return () => sub.unsubscribe();
+  }, [isNew, watch, patchProductDraft]);
+
+  // Remember which top-level form (Product vs Service) is open.
+  useEffect(() => {
+    if (isNew) setDraftKind(kind);
+  }, [isNew, kind, setDraftKind]);
+
   const selectedCategory = watch('category');
   const selectedSubcategory = watch('subcategory');
   const accountingClassification = watch('accountingClassification');
@@ -200,6 +300,32 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
   const unitPrice = Number(watch('unitPrice')) || 0;
   const vendorId = watch('vendorId');
   const vendorName = watch('vendorName');
+  const paymentMethod = watch('paymentMethod');
+  // Payment details are required only when PAID and the method needs a reference.
+  const paymentDetailsRequired = isPaid && METHODS_REQUIRING_DETAILS.includes(paymentMethod);
+
+  // ── Currency (international support) ─────────────────────────────────────────
+  // A purchase from an international vendor is recorded in USD; local vendors in
+  // PHP. The currency follows the selected vendor's country. When editing, fall
+  // back to the saved expense currency (for a manual vendor with no record).
+  const selectedVendor = vendors.find((v) => v.id === vendorId);
+  const isInternational = selectedVendor
+    ? isInternationalLocation(selectedVendor.location)
+    : expense?.currency === 'USD';
+  const currency: Currency = isInternational ? 'USD' : 'PHP';
+  const money = (amount: number) => (currency === 'USD' ? formatUSD(amount) : formatPHP(amount));
+  const priceUnitLabel = currency === 'USD' ? 'Price / Unit ($)' : 'Price / Unit (₱)';
+  const amountLabel = currency === 'USD' ? 'Amount ($)' : 'Amount (₱)';
+
+  // Toggling Paid: sync the RHF `paid` field so the resolver knows whether a
+  // payment method is required, and re-validate the payment fields so stale
+  // "payment method required" errors clear when switched to unpaid (Pending),
+  // and re-apply when switched back to paid.
+  const handlePaidChange = (next: boolean) => {
+    setIsPaid(next);
+    setValue('paid', next, { shouldValidate: true });
+    void trigger(['paymentMethod', 'paymentDetails']);
+  };
 
   const isDelivery = selectedCategory === DELIVERY_CATEGORY;
   const isAirFare = selectedCategory === AIR_FARE_CATEGORY;
@@ -217,41 +343,75 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
     !isAirFare &&
     (isQuantifiable(selectedCategory) || isInventoryLinkedCategory || hasSpecificProduct);
   const vendorOptional = OPTIONAL_VENDOR_CATEGORIES.includes(selectedCategory);
-  const existingSubcategories = subcategoriesFor(selectedCategory);
+  // Subcategories from the expense taxonomy, but when the selected category is
+  // ALSO a product type (exists in the product store), restrict the list to the
+  // varieties that are real products — so you can only expense a variety you
+  // actually carry. Non-product categories (Gas, Utilities, …) keep their full
+  // taxonomy subcategory list.
+  const taxonomySubcategories = subcategoriesFor(selectedCategory);
+  const existingSubcategories = (() => {
+    const norm = (s: string) => s.trim().toLowerCase();
+    const cat = norm(selectedCategory);
+    const productSubs = productList
+      .filter((p) => norm(p.category) === cat && p.subcategory.trim() !== '')
+      .map((p) => p.subcategory);
+    // Category isn't a product type → keep the taxonomy list unchanged.
+    if (productSubs.length === 0) return taxonomySubcategories;
+    // Product type → show exactly the varieties that exist in the product store
+    // (deduped, sorted), so you can only expense a variety you actually carry.
+    return [...new Set(productSubs)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  })();
   const subcategoryOptions = existingSubcategories.map((s) => ({ value: s, label: s }));
+  // Cuttings / Fruit purchases must name a variety, so the subcategory is
+  // mandatory for those categories (mirrors the schema's superRefine check).
+  const subcategoryRequired = SUBCATEGORY_REQUIRED_CATEGORIES.some(
+    (c) => c.toLowerCase() === selectedCategory.trim().toLowerCase(),
+  );
   const allCategories = categories();
 
-  // ── Vendor filtering by category + subcategory (structured supplies) ─────────
-  const matchingVendors = vendors.filter((v) => {
-    if (!selectedCategory) return true;
-    const list = v.supplies ?? [];
-    if (list.length === 0) return false;
-    return list.some((s) => {
-      if (s.category !== selectedCategory) return false;
-      // If a subcategory is chosen, match it OR a vendor whose supply has no subcategory
-      if (selectedSubcategory) return s.subcategory === selectedSubcategory || s.subcategory === '';
-      return true;
-    });
-  });
-  const noVendorMatches = !!selectedCategory && matchingVendors.length === 0;
-  const vendorList = (() => {
-    const base = [...(noVendorMatches ? vendors : matchingVendors)];
-    // Always include the currently-selected vendor as an option, even if it
-    // doesn't supply the chosen category — otherwise picking an existing vendor
-    // from the match suggestions sets a vendorId with no matching <option>, and
-    // the controlled <select> silently falls back to "Select vendor…".
-    if (vendorId && vendorId !== MANUAL_ENTRY && !base.some((v) => v.id === vendorId)) {
-      const selected = vendors.find((v) => v.id === vendorId);
-      if (selected) base.push(selected);
-    }
-    return base.sort((a, b) => a.vendor.localeCompare(b.vendor, undefined, { sensitivity: 'base' }));
+  // ── Single-mode: vendor-first flow ───────────────────────────────────────────
+  // In single mode the Vendor is chosen FIRST (next to the Date), so its dropdown
+  // lists every vendor rather than being scoped by a not-yet-chosen category.
+  const singleVendorList = [...vendors].sort((a, b) =>
+    a.vendor.localeCompare(b.vendor, undefined, { sensitivity: 'base' }),
+  );
+  // Categories the currently-selected vendor supplies (distinct, non-service).
+  // Drives the Category dropdown so it only offers what this vendor actually
+  // provides. With no real vendor selected (empty or manual entry) we fall back
+  // to every non-service category so the flow still works before/without a vendor.
+  const vendorSupplyCategories = (() => {
+    if (!selectedVendor) return null; // null → use the full category list
+    const cats = (selectedVendor.supplies ?? [])
+      .map((s) => s.category)
+      .filter((c) => c.trim() !== '' && !isServiceCategory(c));
+    return [...new Set(cats)].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' }),
+    );
+  })();
+  // Category dropdown options for single mode: scoped to the selected vendor's
+  // supplies when a real vendor is chosen, otherwise all non-service categories.
+  // Always include the currently-selected category so a controlled value that
+  // isn't in the vendor's supplies (e.g. on edit) still renders.
+  const singleCategoryOptions = (() => {
+    if (!vendorSupplyCategories) return categoryOptions;
+    const scoped = [...vendorSupplyCategories];
+    if (selectedCategory && !scoped.includes(selectedCategory)) scoped.push(selectedCategory);
+    return scoped.map((c) => ({ value: c, label: c }));
   })();
 
   // ── Manual vendor entry matching (recommend, don't enforce) ─────────────────
   const isManualVendor = vendorId === MANUAL_ENTRY;
   // Supplies the user assigns to a NEW vendor being created inline. Persisted to
   // the vendor on save and cascaded into the taxonomy by VendorSuppliesField.
-  const [newVendorSupplies, setNewVendorSupplies] = useState<VendorSupply[]>([]);
+  const [newVendorSupplies, setNewVendorSupplies] = useState<VendorSupply[]>(productDraft.newVendorSupplies ?? []);
+
+  // Persist the non-RHF pieces of the draft (toggles, itemized lines, inline
+  // vendor supplies) whenever any of them change (new expenses only).
+  useEffect(() => {
+    if (!isNew) return;
+    patchProductDraft({ isPaid, isResell, cuttingState, cuttingType, mode, items, newVendorSupplies });
+  }, [isNew, isPaid, isResell, cuttingState, cuttingType, mode, items, newVendorSupplies, patchProductDraft]);
+
   const { matches: vendorMatches, exact: exactVendorMatch } = useEntityMatch(
     vendorName, vendors, (v) => v.vendor, isManualVendor
   );
@@ -296,15 +456,39 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
   useEffect(() => {
     if (selectedCategory === prevCategory.current) return;
     prevCategory.current = selectedCategory;
+    // Vendor is chosen first (vendor-first flow) and drives the category list, so
+    // changing the category must NOT clear the selected vendor — only the fields
+    // that hang off the category.
     setValue('subcategory', '');
-    setValue('vendorId', '');
-    setValue('vendorName', '');
     setValue('quantity', 0);
     setValue('unit', '');
     setValue('unitPrice', 0);
     setValue('deliveryFrom', '');
     setValue('deliveryTo', '');
+    // Clear the bookkeeping fields so the prefill effect can repopulate them from
+    // the newly-selected category's taxonomy default (see the prefill effect).
+    setValue('accountingClassification', '');
+    setValue('expenseType', '');
   }, [selectedCategory, setValue]);
+
+  // Vendor-first flow: when the user CHANGES the vendor, drop a selected category
+  // that the new vendor doesn't supply (its options would no longer list it), so
+  // the Category field never shows a value outside the vendor's scope. Tracks the
+  // previous vendor id so an edited expense's saved category survives mount.
+  const prevVendorId = useRef(expense?.vendorId ?? '');
+  useEffect(() => {
+    if (vendorId === prevVendorId.current) return;
+    prevVendorId.current = vendorId;
+    // Only meaningful for a real vendor with a category already chosen.
+    if (!vendorId || vendorId === MANUAL_ENTRY || !selectedCategory) return;
+    const supplied = (selectedVendor?.supplies ?? []).some(
+      (s) => s.category === selectedCategory,
+    );
+    if (!supplied) {
+      setValue('category', '', { shouldDirty: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vendorId]);
 
   // Auto-calculate amount from quantity × unit price (quantifiable + air fare)
   useEffect(() => {
@@ -312,6 +496,48 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       setValue('amount', quantity * unitPrice);
     }
   }, [quantity, unitPrice, showQtyPrice, isAirFare, setValue]);
+
+  // ── Prefill bookkeeping from the category taxonomy ───────────────────────────
+  // When the chosen (category, subcategory) has a bookkeeping default (synced from
+  // the "Expense Categories" sheet), fill the Accounting Classification / Expense
+  // Type — but only when the field is still empty, so we never clobber a value the
+  // user set or an edited expense's saved value. Both remain freely editable.
+  useEffect(() => {
+    if (!selectedCategory.trim()) return;
+    const def = bookkeepingFor(selectedCategory, selectedSubcategory);
+    // Read the LIVE form values (not the watched closure, which can be stale on
+    // the same render the category-reset just cleared them) so a category with
+    // no top-level default — e.g. Root Stock, whose default lives on its
+    // "base/ full" subcategory — still prefills instead of saving blank.
+    if (def.accountingClassification && !getValues('accountingClassification').trim()) {
+      setValue('accountingClassification', def.accountingClassification, { shouldDirty: false });
+    }
+    if (def.expenseType && !getValues('expenseType').trim()) {
+      setValue('expenseType', def.expenseType, { shouldDirty: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCategory, selectedSubcategory]);
+
+  // ── Prefill bookkeeping for ITEMIZED purchases ───────────────────────────────
+  // Itemized expenses have no form-level category (it lives on the line items),
+  // so the effect above never fires. Derive the classification/type from the
+  // FIRST line's (category, subcategory) taxonomy default and fill the fields
+  // while empty, so a saved itemized purchase carries its bookkeeping (and shows
+  // it in the table) instead of blank "—". Still user-editable.
+  const primaryItemKey = items.length > 0 ? `${items[0].category}||${items[0].subcategory}` : '';
+  useEffect(() => {
+    if (mode !== 'itemized') return;
+    const primary = items[0];
+    if (!primary || !primary.category.trim()) return;
+    const def = bookkeepingFor(primary.category, primary.subcategory ?? '');
+    if (def.accountingClassification && !getValues('accountingClassification').trim()) {
+      setValue('accountingClassification', def.accountingClassification, { shouldDirty: false });
+    }
+    if (def.expenseType && !getValues('expenseType').trim()) {
+      setValue('expenseType', def.expenseType, { shouldDirty: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, primaryItemKey]);
 
   // ── Prefill unit price from the latest matching expense ──────────────────────
   // When adding a new quantifiable expense and the user picks a supply
@@ -347,7 +573,16 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
 
   const handleVendorChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
-    setValue('vendorId', val === MANUAL_ENTRY ? MANUAL_ENTRY : val);
+    const nextVendorId = val === MANUAL_ENTRY ? MANUAL_ENTRY : val;
+    // Itemized products are scoped to the selected vendor, so switching to a
+    // different vendor clears the previously-picked line items (they belonged to
+    // the old vendor). Only clears on a genuine change, and only in itemized mode.
+    if (mode === 'itemized' && nextVendorId !== vendorId && items.length > 0) {
+      setItems([]);
+      setItemsError('');
+      toast('Cleared selected products — they belonged to the previous vendor.', { icon: '🧹', duration: 3000 });
+    }
+    setValue('vendorId', nextVendorId);
     if (val === MANUAL_ENTRY || val === '') {
       setValue('vendorName', '');
     } else {
@@ -422,6 +657,14 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
     // Primary category label = first item's category (display convenience)
     const primary = cleanItems[0];
 
+    // Save-time safety net: if the classification/type weren't set (e.g. the
+    // prefill effect hadn't committed before a fast submit), fall back to the
+    // primary item's taxonomy default so the saved expense — and the table —
+    // always carries its bookkeeping.
+    const primaryDefault = bookkeepingFor(primary.category, primary.subcategory ?? '');
+    const accountingClassification = data.accountingClassification.trim() || primaryDefault.accountingClassification;
+    const expenseType = data.expenseType.trim() || primaryDefault.expenseType;
+
     const payload = {
       date: data.date,
       vendorId: resolvedVendorId,
@@ -434,19 +677,24 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       unitPrice: 0,
       items: cleanItems,
       amount,
-      paymentMethod: data.paymentMethod,
-      accountingClassification: data.accountingClassification,
-      expenseType: data.expenseType,
+      // An unpaid (Pending) expense carries no payment method/details — cleared
+      // so stale inputs from toggling never persist.
+      paymentMethod: isPaid ? data.paymentMethod : '',
+      paymentDetails: isPaid ? data.paymentDetails : '',
+      accountingClassification,
+      expenseType,
       notes: data.notes,
       paid: isPaid,
+      // Local vendor → PHP; international vendor → USD. Never mixed/converted.
+      currency,
     };
 
     if (expense) {
       updateExpense(expense.id, payload);
-      toast.success('Expense updated');
+      toast.success(toastSuccess(ENTITY.expense, 'updated'));
     } else {
       addExpense(payload);
-      toast.success('Expense added');
+      toast.success(toastSuccess(ENTITY.expense, 'created'));
     }
     if (newVendorCreated) {
       toast.success(`Added "${resolvedVendorName}" to your Vendors`, { duration: 4000 });
@@ -461,6 +709,32 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       if (seen.has(key)) return;
       seen.add(key);
       if (it.category) addSupply(resolvedVendorId, it.category, it.subcategory);
+
+      // ── Persist the line to the vendor-product catalog ──────────────────────
+      // Ensure a catalog product exists for this line and save its unit + this
+      // vendor's default price, so a product NOT already in the catalog is
+      // captured (and an existing one's price is refreshed) for next time. Also
+      // register the (category, subcategory) in the managed taxonomy.
+      if (it.category && it.subcategory.trim()) {
+        const product = addVendorProduct({
+          name: it.name || it.subcategory || it.category,
+          category: it.category,
+          subcategory: it.subcategory,
+          unit: it.unit,
+        });
+        // Backfill the catalog unit if this line has one and the product didn't.
+        if (it.unit.trim() && !product.unit) {
+          updateVendorProduct(product.id, { unit: it.unit });
+        }
+        // Save this vendor's default price from the line (editable next time).
+        if (it.unitPrice > 0) {
+          linkVendorPrice(resolvedVendorId, product.id, it.unitPrice);
+        }
+        // Keep the expense/product taxonomies in step with the purchased line.
+        addEntry(it.category, it.subcategory);
+        syncTaxonomy(it.category, it.subcategory);
+      }
+
       // Cascade into the sellable Products list when the line is flagged resell,
       // OR when its category is always-resell (Cuttings / Fruit / Fertilizer).
       // Cost is seeded from this line; selling price is left for the user.
@@ -494,6 +768,8 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       }
     });
 
+    // Successful create → the in-progress draft is now saved; discard it.
+    if (!expense) clearDraft();
     onClose();
   };
 
@@ -531,9 +807,9 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
     // sum), but if a quantity IS entered it still cascades to inventory.
     const requireQtyPrice = isQuantifiable(selectedCategory) || isInventoryLinkedCategory;
     if (showQtyPrice && requireQtyPrice) {
-      if (data.quantity <= 0) { toast.error('Quantity is required'); return; }
-      if (!data.unit.trim()) { toast.error('Unit is required'); return; }
-      if (data.unitPrice <= 0) { toast.error('Price / unit is required'); return; }
+      if (data.quantity <= 0) { toast.error(VALIDATION.quantityRequired); return; }
+      if (!data.unit.trim()) { toast.error(VALIDATION.unitRequired); return; }
+      if (data.unitPrice <= 0) { toast.error(VALIDATION.priceRequired); return; }
     }
 
     // ── Description assembly ──────────────────────────────────────────────────
@@ -591,6 +867,14 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
     const recordUnit = showQtyPrice ? data.unit : '';
     const recordUnitPrice = recordDetail ? data.unitPrice : 0;
 
+    // Save-time safety net: if the classification/type weren't set (e.g. the
+    // prefill effect hadn't committed, or a category whose default lives on a
+    // subcategory row like Root Stock), fall back to the taxonomy default so the
+    // saved expense — and the table — always carries its bookkeeping.
+    const bkDefault = bookkeepingFor(effectiveCategory, effectiveSubcategory);
+    const accountingClassification = data.accountingClassification.trim() || bkDefault.accountingClassification;
+    const expenseType = data.expenseType.trim() || bkDefault.expenseType;
+
     const payload = {
       date: data.date,
       vendorId: resolvedVendorId,
@@ -602,22 +886,29 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       unit: recordUnit,
       unitPrice: recordUnitPrice,
       amount: data.amount,
-      paymentMethod: data.paymentMethod,
-      accountingClassification: data.accountingClassification,
-      expenseType: data.expenseType,
+      // An unpaid (Pending) expense carries no payment method/details — cleared
+      // so stale inputs from toggling never persist.
+      paymentMethod: isPaid ? data.paymentMethod : '',
+      paymentDetails: isPaid ? data.paymentDetails : '',
+      accountingClassification,
+      expenseType,
       notes: data.notes,
       paid: isPaid,
-      // Cuttings only: record whether the purchase is packed or bare so the
-      // inventory cascade routes it to the right pool. Left undefined otherwise.
+      // Local vendor → PHP; international vendor → USD. Never mixed/converted.
+      currency,
+      // Cuttings only: record the purpose (packed/bare/replant) so the cascade
+      // routes it correctly. For replant, also carry the cutting type so the
+      // Propagation batch tracks the right timeline. Left undefined otherwise.
       ...(isCuttingCategory && showQtyPrice ? { cuttingState } : {}),
+      ...(isCuttingCategory && showQtyPrice && cuttingState === 'replant' ? { cuttingType } : {}),
     };
 
     if (expense) {
       updateExpense(expense.id, payload);
-      toast.success('Expense updated');
+      toast.success(toastSuccess(ENTITY.expense, 'updated'));
     } else {
       addExpense(payload);
-      toast.success('Expense added');
+      toast.success(toastSuccess(ENTITY.expense, 'created'));
     }
 
     if (newVendorCreated) {
@@ -680,6 +971,8 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       }
     }
 
+    // Successful create → the in-progress draft is now saved; discard it.
+    if (!expense) clearDraft();
     onClose();
   };
 
@@ -691,9 +984,52 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       ? 'Purpose of travel (optional)'
       : 'Brief description of what was purchased';
 
+  // ── Top-level Product vs Service chooser ──────────────────────────────────
+  // Shown for both new and existing expenses. Switching to Service hands off to
+  // the dedicated ServiceExpenseForm (no quantity/unit/inventory/resell).
+  const kindChooser = (
+    <div>
+      <span className="block text-sm font-medium text-gray-700 mb-1">What are you recording?</span>
+      <div className="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-50">
+        {([
+          { value: 'product', label: 'Product / Material' },
+          { value: 'service', label: 'Service' },
+        ] as const).map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            aria-pressed={kind === opt.value}
+            onClick={() => setKind(opt.value)}
+            className={[
+              'px-3 py-1.5 text-sm rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400',
+              kind === opt.value ? 'bg-white text-gray-900 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700',
+            ].join(' ')}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-1 text-xs text-gray-400">
+        {kind === 'service'
+          ? 'A service (utilities, delivery, insurance, labor, …) — no quantity or inventory.'
+          : 'A physical product or material — captures quantity, unit, price and feeds inventory.'}
+      </p>
+    </div>
+  );
+
+  if (kind === 'service') {
+    return (
+      <div className="space-y-4">
+        {kindChooser}
+        <ServiceExpenseForm expense={expense} onClose={onClose} />
+      </div>
+    );
+  }
+
   return (
     <>
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+      {kindChooser}
       {/* Mode toggle: itemized product purchase vs single expense */}
       <div className="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-50">
         <button
@@ -721,9 +1057,9 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       {mode === 'itemized' ? (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <InputField label="Date" type="date" required error={errors.date?.message} {...register('date')} />
+            <InputField label={FIELD.date.label} type="date" required error={errors.date?.message} {...register('date')} />
             <div>
-              <label className="text-sm font-medium text-gray-700">Vendor <span className="text-red-500">*</span></label>
+              <label className="text-sm font-medium text-gray-700">{FIELD.vendor.label} <span className="text-red-500">*</span></label>
               <select
                 className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
                 value={vendorId}
@@ -791,13 +1127,39 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
           />
           {itemsError && <p className="text-xs text-red-500">{itemsError}</p>}
 
-          <SelectField
-            label="Payment Method"
-            required
-            options={PAYMENT_OPTIONS}
-            error={errors.paymentMethod?.message}
-            {...register('paymentMethod')}
-          />
+          {/* Payment — Paid toggle heads the block; its fields depend on it. */}
+          <div>
+            <CheckboxField
+              label="Paid"
+              checked={isPaid}
+              onChange={handlePaidChange}
+              hint={isPaid ? undefined : 'Leave unchecked to record as Pending payment (shows under Outstanding).'}
+            />
+            {isPaid ? (
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <SelectField
+                  label={FIELD.paymentMethod.label}
+                  required
+                  options={PAYMENT_OPTIONS}
+                  error={errors.paymentMethod?.message}
+                  {...register('paymentMethod')}
+                />
+                <InputField
+                  label={FIELD.paymentDetails.label}
+                  required={paymentDetailsRequired}
+                  error={errors.paymentDetails?.message}
+                  {...register('paymentDetails')}
+                  placeholder={paymentDetailsRequired ? 'e.g. BPI account / ref #' : 'Optional'}
+                  hint={paymentDetailsRequired ? 'Required for this payment method' : undefined}
+                />
+              </div>
+            ) : (
+              <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-gold-200 bg-gold-50 px-3 py-2 text-sm text-gold-800">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>Pending payment — this expense will show under Outstanding until it's marked paid.</span>
+              </div>
+            )}
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <CreatableSelect
               label="Accounting Classification"
@@ -821,8 +1183,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             />
           </div>
           <InputField label="Description" {...register('description')} placeholder="Optional — defaults to an item summary" />
-          <CheckboxField label="Paid" checked={isPaid} onChange={setIsPaid} />
-          <TextareaField label="Notes" {...register('notes')} rows={2} />
+          <TextareaField label={FIELD.notes.label} {...register('notes')} rows={2} />
 
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" type="button" onClick={onClose}>Cancel</Button>
@@ -833,30 +1194,140 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         </div>
       ) : (
       <>
+      {/* Vendor-first: Date + Vendor sit together; Vendor scopes the Category list. */}
       <div className="grid grid-cols-2 gap-4">
-        <InputField label="Date" type="date" required error={errors.date?.message} {...register('date')} />
-        <CreatableSelect
-          label="Category"
-          required
-          options={categoryOptions}
-          placeholder="Select category…"
-          value={selectedCategory}
-          onChange={(v) => setValue('category', v, { shouldDirty: true, shouldValidate: true })}
-          onCreate={(v) => {
-            // New expense categories from a purchase default to quantifiable, so
-            // Quantity/Unit/Price show and the item can feed inventory / be resold.
-            addEntry(v, '', true);
-            syncTaxonomy(v, '');
-            setValue('category', v, { shouldDirty: true, shouldValidate: true });
-            setValue('subcategory', '', { shouldDirty: true });
-            toast.success(`Added category "${v}"`);
-          }}
-          error={errors.category?.message}
-          createLabel="+ Add new category…"
-          newFieldLabel="New Category"
-          newFieldPlaceholder="e.g. Equipment Rental"
-        />
+        <InputField label={FIELD.date.label} type="date" required error={errors.date?.message} {...register('date')} />
+        {/* Vendor — Air Fare has no vendor; show a disabled "not applicable" field */}
+        {isAirFare ? (
+          <div>
+            <label className="text-sm font-medium text-gray-700">
+              {FIELD.vendor.label} <span className="text-gray-400 font-normal">(not applicable)</span>
+            </label>
+            <input
+              type="text"
+              value="Not applicable"
+              disabled
+              readOnly
+              className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-400 cursor-not-allowed"
+            />
+          </div>
+        ) : (
+          <div>
+            <label className="text-sm font-medium text-gray-700">
+              {FIELD.vendor.label} {!vendorOptional && <span className="text-red-500">*</span>}
+              {vendorOptional && <span className="text-gray-400 font-normal"> (optional)</span>}
+            </label>
+            <select
+              className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
+              value={vendorId}
+              onChange={handleVendorChange}
+            >
+              <option value="">{vendorOptional ? 'None / not applicable' : 'Select vendor…'}</option>
+              {singleVendorList.map((v) => {
+                const supplyLabel = (v.supplies ?? []).map((s) => s.category).filter((c, i, a) => a.indexOf(c) === i).join(', ');
+                return (
+                  <option key={v.id} value={v.id}>
+                    {v.vendor}{supplyLabel ? ` — ${supplyLabel}` : ''}
+                  </option>
+                );
+              })}
+              <option value={MANUAL_ENTRY}>Enter manually…</option>
+            </select>
+          </div>
+        )}
       </div>
+
+      {/* Vendor supporting UI (errors, manual-entry panel) — full width below the row */}
+      {!isAirFare && (
+        <div>
+          {/* Vendor-required error for the dropdown itself (manual-entry field shows its own) */}
+          {errors.vendorName?.message && !showManualVendorFields && (
+            <p className="text-xs text-red-500 mt-1">{errors.vendorName.message}</p>
+          )}
+
+          {/* When a real vendor is selected and the chosen category isn't yet in its
+              supplies, reassure the user it'll be learned on save (auto-learn). */}
+          {vendorId && vendorId !== MANUAL_ENTRY && selectedCategory &&
+            !(selectedVendor?.supplies ?? []).some((s) => s.category === selectedCategory) && (
+            <p className="text-xs text-gray-500 mt-1">
+              "{selectedCategory}{selectedSubcategory ? ` – ${selectedSubcategory}` : ''}" will be added to this vendor's supplies when you save.
+            </p>
+          )}
+
+          {/* Manual vendor entry with suggestions */}
+          {showManualVendorFields && (
+            <div className="mt-2 space-y-2 rounded-lg border border-gray-100 bg-gray-50/60 p-3">
+              <InputField
+                label="Vendor Name"
+                required={!vendorOptional}
+                autoFocus
+                error={errors.vendorName?.message}
+                {...register('vendorName')}
+                placeholder="Type vendor name…"
+              />
+
+              {/* No supplies picker here: the Category field below already
+                  captures what this vendor supplies, and that purchase category
+                  is auto-added to the new vendor's supplies on save. */}
+
+              {/* Save the vendor to the Vendors list now (without waiting for the
+                  expense to be saved) — mirrors the itemized-mode flow. */}
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-gray-500">
+                  Save this vendor to your Vendors list now, or it's saved automatically with the expense.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0 whitespace-nowrap"
+                  onClick={saveManualVendor}
+                  disabled={!(vendorName ?? '').trim()}
+                >
+                  Save to Vendors
+                </Button>
+              </div>
+
+              <EntityMatchSuggestions
+                query={vendorName}
+                matches={vendorMatches}
+                exact={exactVendorMatch}
+                labelOf={(v) => v.vendor}
+                keyOf={(v) => v.id}
+                onUseExisting={useExistingVendor}
+                noun="vendor"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Category — scoped to the selected vendor's supplies (vendor-first). */}
+      <CreatableSelect
+        label={FIELD.category.label}
+        required
+        options={singleCategoryOptions}
+        // Detect duplicates/similar names against ALL product categories (not just
+        // the vendor-scoped visible list) so a new category typed here is flagged
+        // if it already exists elsewhere in the taxonomy.
+        matchOptions={categoryOptions}
+        placeholder={FIELD.category.placeholder}
+        value={selectedCategory}
+        onChange={(v) => setValue('category', v, { shouldDirty: true, shouldValidate: true })}
+        onCreate={(v) => {
+          // New expense categories from a purchase default to quantifiable, so
+          // Quantity/Unit/Price show and the item can feed inventory / be resold.
+          addEntry(v, '', true);
+          syncTaxonomy(v, '');
+          setValue('category', v, { shouldDirty: true, shouldValidate: true });
+          setValue('subcategory', '', { shouldDirty: true });
+          toast.success(`Added category "${v}"`);
+        }}
+        error={errors.category?.message}
+        createLabel="+ Add new category…"
+        newFieldLabel="New Category"
+        newFieldPlaceholder="e.g. Equipment Rental"
+      />
 
       {/* Similar / exact-duplicate hint for a just-typed category. */}
       <SimilarEntryHint
@@ -873,9 +1344,11 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         <div className="space-y-2">
           <CreatableSelect
             label={isDelivery ? 'Courier / Provider' : vendorOptional ? 'Provider / Subcategory' : 'Subcategory'}
+            required={subcategoryRequired}
+            error={errors.subcategory?.message}
             value={selectedSubcategory}
             options={subcategoryOptions}
-            onChange={(v) => setValue('subcategory', v, { shouldDirty: true })}
+            onChange={(v) => setValue('subcategory', v, { shouldDirty: true, shouldValidate: true })}
             onCreate={(v) => {
               // Persist under the current category so it appears (sorted) next time.
               addEntry(selectedCategory, v);
@@ -898,95 +1371,6 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         </div>
       )}
 
-      {/* Vendor — Air Fare has no vendor; show a disabled "not applicable" field */}
-      {isAirFare ? (
-        <div>
-          <label className="text-sm font-medium text-gray-700">
-            Vendor <span className="text-gray-400 font-normal">(not applicable)</span>
-          </label>
-          <input
-            type="text"
-            value="Not applicable"
-            disabled
-            readOnly
-            className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-400 cursor-not-allowed"
-          />
-        </div>
-      ) : (
-      <div>
-        <label className="text-sm font-medium text-gray-700">
-          Vendor {!vendorOptional && <span className="text-red-500">*</span>}
-          {vendorOptional && <span className="text-gray-400 font-normal"> (optional)</span>}
-        </label>
-        <select
-          className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
-          value={vendorId}
-          onChange={handleVendorChange}
-        >
-          <option value="">{vendorOptional ? 'None / not applicable' : 'Select vendor…'}</option>
-          {vendorList.map((v) => {
-            const supplyLabel = (v.supplies ?? []).map((s) => s.category).filter((c, i, a) => a.indexOf(c) === i).join(', ');
-            return (
-              <option key={v.id} value={v.id}>
-                {v.vendor}{supplyLabel ? ` — ${supplyLabel}` : ''}
-              </option>
-            );
-          })}
-          <option value={MANUAL_ENTRY}>Enter manually…</option>
-        </select>
-
-        {/* Vendor-required error for the dropdown itself (manual-entry field shows its own) */}
-        {errors.vendorName?.message && !showManualVendorFields && (
-          <p className="text-xs text-red-500 mt-1">{errors.vendorName.message}</p>
-        )}
-
-        {noVendorMatches && !vendorOptional && (
-          vendorId && vendorId !== MANUAL_ENTRY ? (
-            // A real vendor is selected: on save this purchase adds the
-            // category/subcategory to that vendor's supplies (auto-learn), so
-            // reassure the user instead of implying nothing is captured.
-            <p className="text-xs text-gray-500 mt-1">
-              "{selectedCategory}{selectedSubcategory ? ` – ${selectedSubcategory}` : ''}" will be added to this vendor's supplies when you save.
-            </p>
-          ) : (
-            <p className="text-xs text-gold-600 mt-1">
-              No vendors supply "{selectedCategory}" yet. Pick a vendor to record it under, or enter one manually.
-            </p>
-          )
-        )}
-
-        {/* Manual vendor entry with suggestions */}
-        {showManualVendorFields && (
-          <div className="mt-2 space-y-2 rounded-lg border border-gray-100 bg-gray-50/60 p-3">
-            <InputField
-              label="Vendor Name"
-              required={!vendorOptional}
-              autoFocus
-              error={errors.vendorName?.message}
-              {...register('vendorName')}
-              placeholder="Type vendor name…"
-            />
-
-            <VendorSuppliesField
-              value={newVendorSupplies}
-              onChange={setNewVendorSupplies}
-              hint="Optional — the categories & subcategories this vendor supplies. Saved to the vendor for future suggestions."
-            />
-
-            <EntityMatchSuggestions
-              query={vendorName}
-              matches={vendorMatches}
-              exact={exactVendorMatch}
-              labelOf={(v) => v.vendor}
-              keyOf={(v) => v.id}
-              onUseExisting={useExistingVendor}
-              noun="vendor"
-            />
-          </div>
-        )}
-      </div>
-      )}
-
       {/* Amount capture — depends on the category type */}
       {isAirFare ? (
         /* ── Air Fare: From / To + optional Qty / Price, Amount required ──── */
@@ -996,10 +1380,10 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             <InputField label="To" {...register('deliveryTo')} placeholder="Destination (optional)" hint="Optional" />
           </div>
           <div className="grid grid-cols-3 gap-4">
-            <InputField label="Quantity" type="number" step="0.01" {...register('quantity')} placeholder="Optional" hint="e.g. no. of tickets" />
-            <InputField label="Price / Unit (₱)" type="number" step="0.01" {...register('unitPrice')} placeholder="Optional" hint="Optional" />
+            <InputField label={FIELD.quantity.label} type="number" step="0.01" {...register('quantity')} placeholder="Optional" hint="e.g. no. of tickets" />
+            <InputField label={priceUnitLabel} type="number" step="0.01" {...register('unitPrice')} placeholder="Optional" hint="Optional" />
             <InputField
-              label="Amount (₱)"
+              label={amountLabel}
               type="number"
               step="0.01"
               required
@@ -1015,7 +1399,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
           <InputField label="From" {...register('deliveryFrom')} placeholder="Pickup location" />
           <InputField label="To" {...register('deliveryTo')} placeholder="Drop-off location" />
           <InputField
-            label="Price (₱)"
+            label={currency === 'USD' ? 'Price ($)' : 'Price (₱)'}
             type="number"
             step="0.01"
             required
@@ -1028,12 +1412,12 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         /* ── Quantifiable: Quantity + Unit × Unit Price → Amount ─────────── */
         <div className="space-y-3">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <InputField label="Quantity" required type="number" step="0.01" error={errors.quantity?.message} {...register('quantity')} placeholder="e.g. 5" />
+          <InputField label={FIELD.quantity.label} required type="number" step="0.01" error={errors.quantity?.message} {...register('quantity')} placeholder={FIELD.quantity.placeholder} />
           <CreatableSelect
-            label="Unit"
+            label={FIELD.unit.label}
             required
             options={unitOptions}
-            placeholder="Select or add…"
+            placeholder={FIELD.unit.placeholder}
             value={watch('unit')}
             onChange={(v) => setValue('unit', v, { shouldDirty: true })}
             onCreate={addUnit}
@@ -1042,20 +1426,20 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
             newFieldPlaceholder="e.g. crate"
           />
           <InputField
-            label="Price / Unit (₱)"
+            label={priceUnitLabel}
             required
             type="number"
             step="0.01"
             error={errors.unitPrice?.message}
             {...register('unitPrice')}
-            placeholder="e.g. 250"
-            hint={prefilledPrice !== undefined ? `Default: ${formatPHP(prefilledPrice)} — editable` : undefined}
+            placeholder={FIELD.unitPrice.placeholder}
+            hint={prefilledPrice !== undefined ? `Default: ${money(prefilledPrice)} — editable` : undefined}
           />
           {/* Amount is auto-calculated from Quantity × Price for quantifiable
               purchases — read-only so it can't drift from the line math (which
               was the source of the confusing "amount must be > 0" error). */}
           <InputField
-            label="Amount (₱)"
+            label={amountLabel}
             type="number"
             step="0.01"
             readOnly
@@ -1068,8 +1452,8 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         </div>
         {isCuttingCategory && (
           <div>
-            <span className="block text-sm font-medium text-gray-700 mb-1">Condition</span>
-            <div className="flex gap-4">
+            <span className="block text-sm font-medium text-gray-700 mb-1">Purpose</span>
+            <div className="flex flex-wrap gap-4">
               <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                 <input
                   type="radio"
@@ -1090,12 +1474,44 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
                 />
                 Bare / needs packing
               </label>
+              <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="radio"
+                  name="cuttingState"
+                  checked={cuttingState === 'replant'}
+                  onChange={() => setCuttingState('replant')}
+                  className="text-primary-600 focus:ring-primary-500"
+                />
+                For replant (farm)
+              </label>
             </div>
             <p className="text-xs text-gray-400 mt-1">
               {cuttingState === 'packed'
                 ? 'Adds to Ready for Sale — sellable right away.'
-                : 'Adds to Needs Packing — pack it in Inventory before it can be sold.'}
+                : cuttingState === 'bare'
+                  ? 'Adds to Needs Packing — pack it in Inventory before it can be sold.'
+                  : 'Creates a Propagation batch reserved for the farm — track it there through rooting and planting. Not added to sellable stock.'}
             </p>
+            {/* Replant: capture the cutting type so the Propagation batch tracks
+                the correct rooting/ready timeline. */}
+            {cuttingState === 'replant' && (
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Cutting Type</label>
+                <select
+                  value={cuttingType}
+                  onChange={(e) => setCuttingType(e.target.value)}
+                  className="w-full sm:w-64 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  aria-label="Cutting type for the replant batch"
+                >
+                  {CUTTING_TYPE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-400 mt-1">
+                  Rooted stock is ready sooner than unrooted cuttings.
+                </p>
+              </div>
+            )}
           </div>
         )}
         <CheckboxField
@@ -1108,7 +1524,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       ) : (
         /* ── Non-quantifiable service/lump-sum: Amount only ──────────────── */
         <InputField
-          label="Amount (₱)"
+          label={amountLabel}
           type="number"
           step="0.01"
           required
@@ -1117,13 +1533,39 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
         />
       )}
 
-      <SelectField
-        label="Payment Method"
-        required
-        options={PAYMENT_OPTIONS}
-        error={errors.paymentMethod?.message}
-        {...register('paymentMethod')}
-      />
+      {/* Payment — the Paid toggle heads the block; its fields depend on it. */}
+      <div>
+        <CheckboxField
+          label="Paid"
+          checked={isPaid}
+          onChange={handlePaidChange}
+          hint={isPaid ? undefined : 'Leave unchecked to record as Pending payment (shows under Outstanding).'}
+        />
+        {isPaid ? (
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <SelectField
+              label={FIELD.paymentMethod.label}
+              required
+              options={PAYMENT_OPTIONS}
+              error={errors.paymentMethod?.message}
+              {...register('paymentMethod')}
+            />
+            <InputField
+              label={FIELD.paymentDetails.label}
+              required={paymentDetailsRequired}
+              error={errors.paymentDetails?.message}
+              {...register('paymentDetails')}
+              placeholder={paymentDetailsRequired ? 'e.g. BPI account / ref #' : 'Optional'}
+              hint={paymentDetailsRequired ? 'Required for this payment method' : undefined}
+            />
+          </div>
+        ) : (
+          <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-gold-200 bg-gold-50 px-3 py-2 text-sm text-gold-800">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            <span>Pending payment — this expense will show under Outstanding until it's marked paid.</span>
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <CreatableSelect
@@ -1149,8 +1591,7 @@ export function ExpenseForm({ expense, onClose }: ExpenseFormProps) {
       </div>
 
       <InputField label="Description" {...register('description')} placeholder={descriptionHint} />
-      <CheckboxField label="Paid" checked={isPaid} onChange={setIsPaid} />
-      <TextareaField label="Notes" {...register('notes')} rows={2} />
+      <TextareaField label={FIELD.notes.label} {...register('notes')} rows={2} />
 
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" type="button" onClick={onClose}>Cancel</Button>

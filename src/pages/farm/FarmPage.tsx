@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import toast from 'react-hot-toast';
 import { Plus, TreePine, Sprout } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -16,7 +17,12 @@ import { StatCard } from '../../components/ui/StatCard';
 import { SectionCard } from '../../components/ui/SectionCard';
 import { CollapsibleSection } from '../../components/ui/CollapsibleSection';
 import { RowActions } from '../../components/ui/RowActions';
-import { formatNumber } from '../../utils/format';
+import { UndoBar } from '../../components/ui/UndoBar';
+import { BulkFieldEdit, type BulkFieldConfig } from '../../components/ui/BulkFieldEdit';
+import { formatNumber, formatDate } from '../../utils/format';
+import { sectionHarvestWindow, isInHarvestWindow } from '../../utils/date';
+import { useNowTick } from '../../hooks/useNowTick';
+import { FARM_LIFECYCLE_STAGE_OPTIONS, FARM_STAGE_FLOWERING } from '../../constants';
 import { useListCrud } from '../../hooks/useListCrud';
 import { BRAND } from '../../constants/chartColors';
 import {
@@ -24,11 +30,48 @@ import {
   TOOLTIP_CONTENT_STYLE, TOOLTIP_LABEL_STYLE, TOOLTIP_ITEM_STYLE,
 } from '../../constants/chartTheme';
 import { FarmForm } from './FarmForm';
+import { StandingPlantsManager } from './StandingPlantsManager';
 
 export function FarmPage() {
-  const { sections, deleteSection, totalArea, totalPlantCapacity, plantDensity } = useFarmStore();
+  const { sections, updateSection, deleteSection, totalArea, totalPlantCapacity, plantDensity } = useFarmStore();
   const { entries: productionEntries } = useProductionStore();
   const crud = useListCrud<FarmSection>();
+  const nowTick = useNowTick();
+
+  // ── Bulk "Set Stage" (walk-the-area lifecycle tagging) ──
+  type BulkKey = 'lifecycleStage' | 'stageDate';
+  const [bulkField, setBulkField] = useState<{ key: BulkKey; config: BulkFieldConfig } | null>(null);
+  const [bulkRows, setBulkRows] = useState<FarmSection[]>([]);
+  const [undoSnapshot, setUndoSnapshot] = useState<{ message: string; prev: { id: string; patch: Partial<FarmSection> }[] } | null>(null);
+
+  const bulkFields: { key: BulkKey; config: BulkFieldConfig }[] = [
+    { key: 'lifecycleStage', config: { label: 'Lifecycle Stage', type: 'select', options: FARM_LIFECYCLE_STAGE_OPTIONS, hint: 'Tag the stage from a quick walk-through. "Flowering" drives the area\u2019s harvest-window estimate (~30 days).' } },
+    { key: 'stageDate', config: { label: 'Stage Date', type: 'date', hint: 'When this area entered the stage \u2014 the flowering date the harvest estimate counts from.' } },
+  ];
+
+  const openBulk = (key: BulkKey, config: BulkFieldConfig, rows: FarmSection[]) => {
+    if (rows.length === 0) return;
+    setBulkField({ key, config });
+    setBulkRows(rows);
+  };
+  const closeBulk = () => { setBulkField(null); setBulkRows([]); };
+
+  const applyBulk = (value: string | number) => {
+    if (!bulkField) return;
+    const { key, config } = bulkField;
+    const count = bulkRows.length;
+    const prev = bulkRows.map((s) => ({ id: s.id, patch: { [key]: s[key] } as Partial<FarmSection> }));
+    bulkRows.forEach((s) => updateSection(s.id, { [key]: value } as Partial<FarmSection>));
+    setUndoSnapshot({ message: `Set ${config.label.toLowerCase()} to "${value}" for ${count} section${count !== 1 ? 's' : ''}.`, prev });
+    toast.success(`Updated ${config.label.toLowerCase()} for ${count} section${count !== 1 ? 's' : ''}`);
+    closeBulk();
+  };
+
+  const undoBulk = () => {
+    if (!undoSnapshot) return;
+    undoSnapshot.prev.forEach(({ id, patch }) => updateSection(id, patch));
+    setUndoSnapshot(null);
+  };
 
   /**
    * Expected harvest estimate per section:
@@ -102,6 +145,39 @@ export function FarmPage() {
       sortValue: (s) => expectedHarvest(s.currentPlantCapacity) ?? 0,
     },
     { key: 'plantSubcategory', header: 'Plant Variety', accessor: (s) => s.plantSubcategory || '—', sortValue: (s) => s.plantSubcategory },
+    {
+      key: 'lifecycleStage',
+      header: 'Stage',
+      accessor: (s) => {
+        if (!s.lifecycleStage) return <span className="text-gray-300">—</span>;
+        const flowering = s.lifecycleStage === FARM_STAGE_FLOWERING;
+        return (
+          <div className="flex flex-col gap-0.5">
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full w-fit ${flowering ? 'text-berry-700 bg-berry-50' : 'text-primary-700 bg-primary-50'}`}>
+              {s.lifecycleStage}
+            </span>
+            {s.stageDate && <span className="text-xs text-gray-400">since {formatDate(s.stageDate)}</span>}
+          </div>
+        );
+      },
+      sortValue: (s) => s.lifecycleStage ?? '',
+    },
+    {
+      key: 'harvestWindow',
+      header: 'Harvest Window',
+      accessor: (s) => {
+        const w = sectionHarvestWindow(s);
+        if (!w) return <span className="text-gray-300">—</span>;
+        const due = isInHarvestWindow(w, nowTick);
+        return (
+          <div className="flex flex-col gap-0.5">
+            <span className={due ? 'font-semibold text-orange-700' : 'text-gray-600'}>{w.label}</span>
+            {due && <span className="text-xs font-bold text-orange-600">⚠️ Fruiting window</span>}
+          </div>
+        );
+      },
+      sortValue: (s) => sectionHarvestWindow(s)?.date ?? '',
+    },
     { key: 'pic',          header: 'PIC',            accessor: (s) => s.pic || '—',          sortValue: (s) => s.pic },
     { key: 'notes',        header: 'Notes',          accessor: (s) => <span className="text-xs text-gray-400">{s.notes || '—'}</span>, sortValue: (s) => s.notes },
   ];
@@ -216,12 +292,47 @@ export function FarmPage() {
           searchFilter={(s, q) =>
             s.sectionType.toLowerCase().includes(q) ||
             s.plantSubcategory.toLowerCase().includes(q) ||
+            (s.lifecycleStage ?? '').toLowerCase().includes(q) ||
             s.pic.toLowerCase().includes(q)
           }
-          searchPlaceholder="Search farm sections…"
+          searchPlaceholder="Search by section, variety, stage, or PIC…"
+          // Soft-orange highlight when a flowering area has entered its estimated
+          // fruiting window, so the team knows to check it for harvest.
+          rowClassName={(s) =>
+            isInHarvestWindow(sectionHarvestWindow(s), nowTick)
+              ? 'bg-orange-50 hover:bg-orange-100'
+              : ''
+          }
+          bulkActions={{
+            noun: 'section',
+            actions: bulkFields.map(({ key, config }) => ({
+              label: `Set ${config.label}`,
+              onClick: (rows: FarmSection[]) => openBulk(key, config, rows),
+            })),
+          }}
           actions={(s) => <RowActions onEdit={() => crud.openEdit(s)} onDelete={() => crud.requestDelete(s)} />}
         />
       )}
+
+      {undoSnapshot && (
+        <UndoBar
+          message={undoSnapshot.message}
+          onUndo={undoBulk}
+          onDismiss={() => setUndoSnapshot(null)}
+        />
+      )}
+
+      {/* Bulk-tag lifecycle stage / stage date across selected sections (undoable) */}
+      <BulkFieldEdit
+        open={!!bulkField}
+        onClose={closeBulk}
+        field={bulkField?.config ?? null}
+        count={bulkRows.length}
+        onApply={applyBulk}
+      />
+
+      {/* Standing plants — the actual orchard feeding the supply forecast */}
+      <StandingPlantsManager />
 
       <Modal open={crud.modalOpen} onClose={crud.closeModal} title={crud.editing ? 'Edit Farm Section' : 'Add Farm Section'} size="lg">
         <FarmForm section={crud.editing} onClose={crud.closeModal} />

@@ -3,7 +3,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { useProductStore } from '../../store/productStore';
 import { useVendorStore } from '../../store/vendorStore';
 import {
-  useInventoryCategoryStore, useUnitStore,
+  useUnitStore,
   useAccountingClassificationStore, useExpenseTypeStore,
 } from '../../store/optionStores';
 import { useProductCategoryStore } from '../../store/productCategoryStore';
@@ -12,12 +12,17 @@ import { InputField, SelectField, CheckboxField } from '../../components/forms/F
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import { Button } from '../../components/ui/Button';
-import { INVENTORY_LINKED_TYPES, PAYMENT_OPTIONS, MANUAL_ENTRY } from '../../constants';
+import { INVENTORY_LINKED_TYPES, PAYMENT_OPTIONS, MANUAL_ENTRY, CUTTINGS_PRODUCT_TYPE } from '../../constants';
+import type { CuttingPurchaseState } from '../../types';
 import { todayISO } from '../../utils/date';
-import { formatNumber } from '../../utils/format';
+import { formatQty } from '../../utils/format';
 
 /** Categories that are always sellable — they cascade into Products regardless. */
 const ALWAYS_SELL_CATEGORIES = INVENTORY_LINKED_TYPES as readonly string[];
+
+/** True when a category tracks packed/bare condition (Cuttings). */
+const isCuttingCategory = (category: string): boolean =>
+  category.trim().toLowerCase() === CUTTINGS_PRODUCT_TYPE.toLowerCase();
 
 /** One draft inventory row being built in the multi-add flow. */
 export interface InventoryDraft {
@@ -30,6 +35,19 @@ export interface InventoryDraft {
   beginningQty: number;
   /** Whether to mirror this item into the sellable Products list. */
   sell: boolean;
+  /**
+   * Cuttings only (BOUGHT path): whether the purchase arrives packed (Ready for
+   * Sale) or bare (Needs Packing). Drives the expense→inventory pool. Ignored for
+   * other categories. Defaults to 'packed'.
+   */
+  cuttingState: CuttingPurchaseState;
+  /**
+   * Cuttings only (OPENING-STOCK path): how many of `beginningQty` are already
+   * packed & Ready for Sale. The remainder (beginningQty − packedQty) is treated
+   * as Needs Packing. Clamped to [0, beginningQty]. Ignored for other categories
+   * and for the bought path (which uses `cuttingState`).
+   */
+  packedQty: number;
   notes: string;
   /**
    * Whether this item was bought (a purchase) rather than existing opening
@@ -59,6 +77,8 @@ export function emptyDraft(): InventoryDraft {
     unitCost: 0,
     beginningQty: 0,
     sell: false,
+    cuttingState: 'packed',
+    packedQty: 0,
     notes: '',
     bought: false,
     vendorName: '',
@@ -85,8 +105,7 @@ interface InventoryItemsPickerProps {
  */
 export function InventoryItemsPicker({ drafts, onChange }: InventoryItemsPickerProps) {
   const findProduct = useProductStore((s) => s.findByCategorySub);
-  const categoryValues = useInventoryCategoryStore((s) => s.values);
-  const addCategory = useInventoryCategoryStore((s) => s.add);
+
   const unitValues = useUnitStore((s) => s.values);
   const addUnit = useUnitStore((s) => s.add);
   const unitOptions = unitValues.map((v) => ({ value: v, label: v }));
@@ -106,12 +125,12 @@ export function InventoryItemsPicker({ drafts, onChange }: InventoryItemsPickerP
     [vendors],
   );
 
-  // Type dropdown = inventory categories unioned with product taxonomy categories.
+  // Type dropdown = the unified product-category taxonomy (shared with Products).
   const categoryOptions = useMemo(() => {
-    const seen = new Set<string>(categoryValues);
+    const seen = new Set<string>();
     categoryEntries.forEach((e) => seen.add(e.category));
     return Array.from(seen).sort().map((v) => ({ value: v, label: v }));
-  }, [categoryValues, categoryEntries]);
+  }, [categoryEntries]);
   const categoryNames = categoryOptions.map((o) => o.value);
 
   /** Variety options for a given category, from the product taxonomy. */
@@ -166,6 +185,19 @@ export function InventoryItemsPicker({ drafts, onChange }: InventoryItemsPickerP
       {drafts.map((row, i) => {
         const itemOptions = itemOptionsFor(row.category).map((v) => ({ value: v, label: v }));
         const alwaysSell = ALWAYS_SELL_CATEGORIES.includes(row.category.trim());
+        // Hint for the Unit field: the unit is how this variety is counted and
+        // priced (e.g. per bottle, per kg). Flag a brand-new type so the user
+        // knows they're defining the unit for a category that doesn't exist yet.
+        const typeName = row.category.trim();
+        const varietyName = row.subcategory.trim();
+        const isNewType =
+          !!typeName &&
+          !categoryNames.some((c) => c.trim().toLowerCase() === typeName.toLowerCase());
+        const unitHint = varietyName
+          ? isNewType
+            ? `This will be saved as the default unit for ${varietyName} in the new "${typeName}" category.`
+            : `This will be saved as the default unit for ${varietyName}.`
+          : 'This will be saved as the default unit for this item.';
         return (
           <div key={row.key} className="rounded-lg border border-gray-200 p-3 space-y-3">
             <div className="flex items-start justify-between gap-2">
@@ -191,7 +223,7 @@ export function InventoryItemsPicker({ drafts, onChange }: InventoryItemsPickerP
                   value={row.category}
                   options={categoryOptions}
                   onChange={(v) => changeCategory(i, v)}
-                  onCreate={(v) => { addCategory(v); syncTaxonomy(v, ''); changeCategory(i, v); }}
+                  onCreate={(v) => { syncTaxonomy(v, ''); changeCategory(i, v); }}
                   placeholder="Select…"
                   createLabel="+ Create new type…"
                   newFieldLabel="New Type"
@@ -238,17 +270,20 @@ export function InventoryItemsPicker({ drafts, onChange }: InventoryItemsPickerP
 
             {/* Unit + cost + beginning qty */}
             <div className="grid grid-cols-3 gap-4">
-              <CreatableSelect
-                label="Unit"
-                required
-                value={row.unit}
-                options={unitOptions}
-                onChange={(v) => patchRow(i, { unit: v })}
-                onCreate={(v) => { addUnit(v); patchRow(i, { unit: v }); }}
-                createLabel="+ Create new unit…"
-                newFieldLabel="New Unit"
-                newFieldPlaceholder="e.g. crate"
-              />
+              <div>
+                <CreatableSelect
+                  label="Unit"
+                  required
+                  value={row.unit}
+                  options={unitOptions}
+                  onChange={(v) => patchRow(i, { unit: v })}
+                  onCreate={(v) => { addUnit(v); patchRow(i, { unit: v }); }}
+                  createLabel="+ Create new unit…"
+                  newFieldLabel="New Unit"
+                  newFieldPlaceholder="e.g. crate"
+                />
+                {unitHint && <p className="mt-1 text-xs text-gold-600">{unitHint}</p>}
+              </div>
               <InputField
                 label="Unit Cost (₱)"
                 type="number"
@@ -261,9 +296,95 @@ export function InventoryItemsPicker({ drafts, onChange }: InventoryItemsPickerP
                 type="number"
                 step="0.01"
                 value={row.beginningQty}
-                onChange={(e) => patchRow(i, { beginningQty: Number(e.target.value) || 0 })}
+                onChange={(e) => {
+                  const next = Number(e.target.value) || 0;
+                  // Keep the cuttings "already packed" split within the new total.
+                  patchRow(i, { beginningQty: next, packedQty: Math.min(row.packedQty, Math.max(0, next)) });
+                }}
               />
             </div>
+
+            {/* Effect summary — clarifies what saving this row does. A new row that
+                collides with an existing (Type + Variety) merges additively, so we
+                phrase opening stock as "adding to beginning quantity". */}
+            {row.subcategory.trim() && (Number(row.beginningQty) || 0) > 0 && (
+              <p className="text-xs text-primary-700">
+                {row.bought
+                  ? <>You're buying <span className="font-semibold">{formatQty(Number(row.beginningQty) || 0)}</span> {row.unit || 'unit'} of <span className="font-semibold">{row.subcategory.trim()}</span> (recorded as an expense).</>
+                  : <>You're adding <span className="font-semibold">{formatQty(Number(row.beginningQty) || 0)}</span> {row.unit || 'unit'} to the beginning quantity of <span className="font-semibold">{row.subcategory.trim()}</span>.</>}
+              </p>
+            )}
+
+            {/* Cuttings packing split.
+                - Bought path: a binary packed/bare toggle (the expense→inventory
+                  cascade routes the whole purchase to one pool).
+                - Opening-stock path: an "already packed" quantity so the user can
+                  say how many of the beginning qty are Ready for Sale vs still
+                  Need Packing. */}
+            {isCuttingCategory(row.category) && row.bought && (
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Condition</label>
+                <div className="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-50">
+                  {([
+                    { value: 'packed', label: 'Already packed' },
+                    { value: 'bare', label: 'Bare / needs packing' },
+                  ] as const).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      aria-pressed={row.cuttingState === opt.value}
+                      onClick={() => patchRow(i, { cuttingState: opt.value })}
+                      className={[
+                        'px-2.5 py-1 text-xs rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400',
+                        row.cuttingState === opt.value
+                          ? 'bg-white text-primary-700 shadow-sm font-medium'
+                          : 'text-gray-500 hover:text-gray-700',
+                      ].join(' ')}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mt-1">
+                  {row.cuttingState === 'packed'
+                    ? 'Adds to Available to Sell — sellable right away.'
+                    : 'Adds to Needs Packing — pack it in Inventory before it can be sold.'}
+                </p>
+              </div>
+            )}
+
+            {isCuttingCategory(row.category) && !row.bought && (() => {
+              const total = Number(row.beginningQty) || 0;
+              const packed = Math.min(Math.max(0, Number(row.packedQty) || 0), total);
+              const needing = Math.max(0, total - packed);
+              return (
+                <div>
+                  <InputField
+                    label="Already packed (of the beginning qty)"
+                    type="number"
+                    step="1"
+                    min={0}
+                    max={total}
+                    value={row.packedQty}
+                    onChange={(e) =>
+                      patchRow(i, {
+                        packedQty: Math.min(Math.max(0, Number(e.target.value) || 0), total),
+                      })
+                    }
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    {total > 0 ? (
+                      <>
+                        <span className="font-medium text-leaf-700">{formatQty(packed)}</span> ready for sale ·{' '}
+                        <span className="font-medium text-gold-700">{formatQty(needing)}</span> need packing.
+                      </>
+                    ) : (
+                      'Enter a beginning quantity first, then how many are already packed.'
+                    )}
+                  </p>
+                </div>
+              );
+            })()}
 
             {/* Sell flag — locked-on note for always-sell categories */}
             {alwaysSell ? (
@@ -296,7 +417,7 @@ export function InventoryItemsPicker({ drafts, onChange }: InventoryItemsPickerP
                   <span className="font-medium text-gray-700">
                     ₱{((Number(row.beginningQty) || 0) * (Number(row.unitCost) || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>{' '}
-                  ({formatNumber(Number(row.beginningQty) || 0)} {row.unit || 'unit'} × ₱{(Number(row.unitCost) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}).
+                  ({formatQty(Number(row.beginningQty) || 0)} {row.unit || 'unit'} × ₱{(Number(row.unitCost) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}).
                   The quantity is treated as purchased stock.
                 </p>
 
@@ -367,6 +488,22 @@ export function InventoryItemsPicker({ drafts, onChange }: InventoryItemsPickerP
                     />
                   </div>
                 </div>
+
+                {/* Blank accounting fields are allowed, but the expense that gets
+                    created will be missing them — warn the user to fill them in
+                    later from the Expenses page. */}
+                {(!row.accountingClassification.trim() || !row.expenseType.trim()) && (() => {
+                  const missing = [
+                    !row.accountingClassification.trim() && 'accounting classification',
+                    !row.expenseType.trim() && 'expense type',
+                  ].filter(Boolean);
+                  return (
+                    <p className="mt-1 text-xs text-gold-600">
+                      This purchase will be recorded with no {missing.join(' and ')} — update{' '}
+                      {missing.length > 1 ? 'them' : 'it'} on the expense in the Expenses page.
+                    </p>
+                  );
+                })()}
               </div>
             )}
           </div>

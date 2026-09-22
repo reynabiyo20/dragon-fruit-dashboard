@@ -3,24 +3,28 @@ import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
-import type { InventoryItem } from '../../types';
+import { X } from 'lucide-react';
+import type { InventoryItem, CuttingPurchaseState } from '../../types';
 import { useInventoryStore } from '../../store/inventoryStore';
 import { useProductStore } from '../../store/productStore';
 import { useExpenseStore } from '../../store/expenseStore';
 import { useVendorStore } from '../../store/vendorStore';
+import { useSaleStore } from '../../store/saleStore';
 import { MANUAL_ENTRY } from '../../constants';
 import { todayISO } from '../../utils/date';
 import { InputField, TextareaField, DisplayField, CheckboxField } from '../../components/forms/FormField';
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import { Button } from '../../components/ui/Button';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { DuplicateWarning } from '../../components/forms/DuplicateWarning';
 import { useDuplicateCheck } from '../../hooks/useDuplicateCheck';
 import { formatNumber, categoryLabel } from '../../utils/format';
-import { useInventoryCategoryStore, useUnitStore } from '../../store/optionStores';
+import { useUnitStore } from '../../store/optionStores';
 import { useProductCategoryStore } from '../../store/productCategoryStore';
 import { syncTaxonomy } from '../../store/taxonomySync';
 import { unlinkResellProduct } from '../../store/productLink';
-import { INVENTORY_LINKED_TYPES } from '../../constants';
+import { INVENTORY_LINKED_TYPES, CUTTINGS_PRODUCT_TYPE } from '../../constants';
+import { ENTITY, toastSuccess, VALIDATION, FIELD } from '../../constants/messages';
 import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import { InventoryItemsPicker, emptyDraft, type InventoryDraft } from './InventoryItemsPicker';
 import { ExistingProductsPicker, type ExistingSelection } from './ExistingProductsPicker';
@@ -34,7 +38,7 @@ const ALWAYS_SELL_CATEGORIES = INVENTORY_LINKED_TYPES as readonly string[];
  * multi-add picker so their save behavior stays identical.
  */
 function commitInventoryItem(
-  data: { category: string; subcategory: string; unit: string; unitCost: number; beginningQty: number; sell: boolean; notes: string },
+  data: { category: string; subcategory: string; unit: string; unitCost: number; beginningQty: number; sell: boolean; cuttingState?: CuttingPurchaseState; packedQty?: number; notes: string },
   deps: {
     addItem: ReturnType<typeof useInventoryStore.getState>['addItem'];
     findProduct: ReturnType<typeof useProductStore.getState>['findByCategorySub'];
@@ -46,12 +50,32 @@ function commitInventoryItem(
 
   if (category) syncTaxonomy(category, subcategory);
 
+  // Cuttings opening stock is routed into the sellable pools rather than the
+  // generic beginning-qty pool, so it shows correctly as Ready for Sale or Needs
+  // Packing (mirroring how bought/harvested cuttings are tracked). The user splits
+  // the beginning quantity: `packedQty` is already packed (→ packed +
+  // availableForSale / Ready for Sale), and the remainder needs packing
+  // (→ needsPacking). All feed endingQty, so beginningQty stays 0 to avoid
+  // double-counting.
+  const qty = data.beginningQty;
+  const isCutting = category.toLowerCase() === CUTTINGS_PRODUCT_TYPE.toLowerCase();
+  const packed = isCutting ? Math.min(Math.max(0, data.packedQty ?? 0), qty) : 0;
+  const needsPacking = isCutting ? Math.max(0, qty - packed) : 0;
+  const cuttingPools =
+    isCutting && qty > 0
+      ? {
+          ...(packed > 0 ? { packed, availableForSale: packed } : {}),
+          ...(needsPacking > 0 ? { needsPacking } : {}),
+        }
+      : {};
+
   deps.addItem({
     category, subcategory,
     unit: data.unit,
-    beginningQty: data.beginningQty,
+    beginningQty: isCutting ? 0 : data.beginningQty,
     purchased: 0, used: 0, sold: 0,
     unitCost: data.unitCost,
+    ...cuttingPools,
     notes: data.notes,
   });
 
@@ -112,6 +136,7 @@ function commitBoughtItem(
 
   // Record the purchase as an expense. This cascades into inventory `purchased`
   // (auto-creating the row with this unit + cost), price history and totals.
+  const isCutting = category.toLowerCase() === CUTTINGS_PRODUCT_TYPE.toLowerCase();
   deps.addExpense({
     date: draft.purchaseDate || todayISO(),
     vendorId,
@@ -127,6 +152,9 @@ function commitBoughtItem(
     paid: draft.paid,
     accountingClassification: draft.accountingClassification,
     expenseType: draft.expenseType,
+    // Cuttings only: pass the packed/bare condition so the expense→inventory
+    // cascade routes the quantity into Ready for Sale vs Needs Packing.
+    ...(isCutting ? { cuttingState: draft.cuttingState } : {}),
     notes: draft.notes,
   });
 
@@ -143,9 +171,9 @@ function commitBoughtItem(
 }
 
 const schema = z.object({
-  subcategory: z.string().min(1, 'Variety / item is required'),
-  category: z.string().min(1, 'Type is required'),
-  unit: z.string().min(1, 'Unit is required'),
+  subcategory: z.string().min(1, VALIDATION.subcategoryRequired),
+  category: z.string().min(1, VALIDATION.categoryRequired),
+  unit: z.string().min(1, VALIDATION.unitRequired),
   beginningQty: z.coerce.number().min(0),
   purchased: z.coerce.number().min(0),
   used: z.coerce.number().min(0),
@@ -234,17 +262,29 @@ function InventoryAddForm({ onClose }: { onClose: () => void }) {
       setError(`Beginning Qty can't be negative (check "${badExisting.subcategory}").`);
       return;
     }
-    const badDraft = filledDrafts.find((d) => d.beginningQty < 0);
-    if (badDraft) {
-      setError(`Beginning Qty can't be negative (check "${badDraft.subcategory}").`);
+    // New items must have a real, positive quantity — a 0-qty row is almost
+    // always an accident and just creates clutter. (Editing an existing item down
+    // to 0 stays allowed via the edit form; this only guards manual adds.)
+    const zeroDraft = filledDrafts.find((d) => (Number(d.beginningQty) || 0) <= 0);
+    if (zeroDraft) {
+      const qtyLabel = zeroDraft.bought ? 'quantity bought' : 'beginning quantity';
+      setError(`Enter a ${qtyLabel} greater than 0 for "${zeroDraft.subcategory}".`);
       return;
     }
-    // A bought item needs a positive quantity so the recorded expense is real.
-    const badBought = filledDrafts.find((d) => d.bought && (Number(d.beginningQty) || 0) <= 0);
-    if (badBought) {
-      setError(`Enter the quantity bought for "${badBought.subcategory}" (greater than 0).`);
-      return;
-    }
+
+    // Capture which New Product rows introduce a brand-new (category, variety) —
+    // i.e. one with no existing Product AND no existing inventory row yet. For
+    // those, the unit the user picked becomes that item's default unit, so we
+    // notify them after saving. Must be computed BEFORE committing, since the
+    // commit registers the taxonomy / creates the rows.
+    const newUnitDefaults = filledDrafts
+      .filter((d) => {
+        const cat = d.category.trim();
+        const sub = d.subcategory.trim();
+        if (!cat || !sub || !d.unit.trim()) return false;
+        return !findProduct(cat, sub) && !findInventory(cat, sub);
+      })
+      .map((d) => ({ subcategory: d.subcategory.trim(), unit: d.unit.trim() }));
 
     setSubmitting(true);
     selectedExisting.forEach(commitExisting);
@@ -259,10 +299,25 @@ function InventoryAddForm({ onClose }: { onClose: () => void }) {
     });
     const boughtCount = filledDrafts.filter((d) => d.bought).length;
     const total = selectedExisting.length + filledDrafts.length;
-    toast.success(`Added ${total} item${total !== 1 ? 's' : ''} to inventory`);
+    // Follow the shared "[Entity] successfully [action]" toast convention. For a
+    // batch, keep that phrasing with a leading count.
+    toast.success(
+      total === 1
+        ? toastSuccess(ENTITY.inventoryItem, 'added')
+        : `${total} inventory items successfully added`,
+    );
     if (boughtCount > 0) {
-      toast.success(`Recorded ${boughtCount} purchase${boughtCount !== 1 ? 's' : ''} as expense${boughtCount !== 1 ? 's' : ''}`, { icon: '🧾', duration: 4000 });
+      toast.success(
+        boughtCount === 1
+          ? toastSuccess(ENTITY.expense, 'created')
+          : `${boughtCount} expenses successfully created`,
+        { icon: '🧾', duration: 4000 },
+      );
     }
+    // Let the user know the unit they chose is now the default for each new item.
+    newUnitDefaults.forEach(({ subcategory, unit }) => {
+      toast(`"${unit}" is set as the default unit for ${subcategory}`, { icon: '📦', duration: 4000 });
+    });
     onClose();
   };
 
@@ -288,9 +343,35 @@ function InventoryAddForm({ onClose }: { onClose: () => void }) {
       </div>
 
       {tab === 'existing' ? (
-        <ExistingProductsPicker selections={selections} onChange={(s) => { setSelections(s); setError(''); }} />
+        <>
+          <div className="flex justify-start">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              icon={<X className="w-4 h-4" />}
+              onClick={() => { setSelections({}); setError(''); }}
+              disabled={selectedExisting.length === 0}
+            >
+              Clear selection
+            </Button>
+          </div>
+          <ExistingProductsPicker selections={selections} onChange={(s) => { setSelections(s); setError(''); }} />
+        </>
       ) : (
         <>
+          <div className="flex justify-start">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              icon={<X className="w-4 h-4" />}
+              onClick={() => { setDrafts([emptyDraft()]); setError(''); }}
+              disabled={filledDrafts.length === 0}
+            >
+              Clear items
+            </Button>
+          </div>
           <InventoryItemsPicker drafts={drafts} onChange={(d) => { setDrafts(d); setError(''); }} />
           <p className="text-xs text-gray-400">
             Adding an item that already exists (same Type + Variety) merges its quantity into the existing row.
@@ -317,8 +398,8 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
   // target when this item is flagged sellable.
   const findProduct = useProductStore((s) => s.findByCategorySub);
   const upsertSellableProduct = useProductStore((s) => s.upsertFromPurchase);
-  const categoryValues = useInventoryCategoryStore((s) => s.values);
-  const addCategory = useInventoryCategoryStore((s) => s.add);
+  // Categories come from the unified product taxonomy (shared with Products);
+  // new ones are added via syncTaxonomy in the category field's onCreate.
   const unitValues = useUnitStore((s) => s.values);
   const addUnit = useUnitStore((s) => s.add);
   const unitOptions = unitValues.map((v) => ({ value: v, label: v }));
@@ -332,19 +413,41 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
       (!!findProduct(item.category, item.subcategory) ||
         ALWAYS_SELL_CATEGORIES.includes(item.category.trim())),
   );
+  const sales = useSaleStore((s) => s.sales);
+  // When unchecking "Do you sell this?" would remove the product from Products,
+  // we pause to confirm. Holds the validated form data until the user confirms.
+  const [unlinkConfirm, setUnlinkConfirm] = useState<FormValues | null>(null);
+
+  // ── Cuttings packed vs needs-packing split (edit) ───────────────────────────
+  // For a Cuttings row, let the user re-split how much on-hand stock is packed
+  // (Ready for Sale) vs still Needs Packing. The MOVABLE stock is everything on
+  // hand that hasn't been sold yet: plain opening stock (beginningQty) + bare
+  // (needsPacking) + unsold packed (availableForSale). Packed stock already
+  // sold/delivered (packed − availableForSale) is fixed and never touched.
+  // `packedReady` is the desired size of the Ready-for-Sale pool, seeded from the
+  // row's current availableForSale.
+  const isCuttingItem = item.category.trim().toLowerCase() === CUTTINGS_PRODUCT_TYPE.toLowerCase();
+  const curNeedsPacking = item.needsPacking ?? 0;
+  const curAvailableForSale = item.availableForSale ?? 0;
+  const curPacked = item.packed ?? 0;
+  const fixedPackedSold = Math.max(0, curPacked - curAvailableForSale); // sold/delivered, stays packed
+  const curBeginning = item.beginningQty ?? 0;
+  const movableCuttings = curBeginning + curNeedsPacking + curAvailableForSale;
+  const [packedReady, setPackedReady] = useState(curAvailableForSale);
 
   // Category dropdown = the inventory categories unioned with product types, so
   // Cuttings/Fruit/Fertilizer line up with products while inventory-only
   // categories (Packing Material, Tools…) remain available.
   const categoryEntries = useProductCategoryStore((s) => s.entries);
   const categoryOptions = useMemo(() => {
-    const seen = new Set<string>(categoryValues);
+    const seen = new Set<string>();
     categoryEntries.forEach((e) => seen.add(e.category));
     return Array.from(seen).sort().map((v) => ({ value: v, label: v }));
-  }, [categoryValues, categoryEntries]);
+  }, [categoryEntries]);
 
   const { register, handleSubmit, control, setValue, watch, setError, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
+    mode: 'onTouched',
     defaultValues: {
       subcategory: item?.subcategory ?? '',
       category: item?.category ?? '',
@@ -424,8 +527,12 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
     // ending qty goes negative (given the existing purchased/used/sold and the
     // cutting pools). The error surfaces on Beginning Qty, the field being edited.
     const packedPools = (item?.packed ?? 0) + (item?.needsPacking ?? 0);
+    // Cuttings draw delivered sales out of `packed` (not off endingQty via
+    // `sold`), so `sold` is not subtracted for them here — mirrors calcEnding.
+    const soldTerm =
+      category.toLowerCase() === CUTTINGS_PRODUCT_TYPE.toLowerCase() ? 0 : data.sold;
     const endingIfSaved =
-      data.beginningQty + data.purchased - data.used - data.sold + packedPools;
+      data.beginningQty + data.purchased - data.used - soldTerm + packedPools;
     if (endingIfSaved < 0) {
       const minBeginning = data.beginningQty - endingIfSaved; // beginning that yields ending 0
       setError('beginningQty', {
@@ -435,18 +542,61 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
       return;
     }
 
+    // Guard the "stop selling this" case: unchecking "Do you sell this?" removes
+    // the item from Products, so pause and confirm first. This applies to EVERY
+    // category — "always-sell" categories (Cuttings/Fruit/Fertilizer) only default
+    // the checkbox ON; an explicit uncheck is still honored. The one exception is
+    // a product referenced by a recorded sale — deleting that would orphan sales
+    // history, so it's kept (commit() surfaces the "kept — has sales" toast).
+    const wantsUnsell = !sell && !!subcategory;
+    if (wantsUnsell) {
+      const product = findProduct(category, subcategory);
+      const referenced =
+        !!product && sales.some((s) => s.items.some((i) => i.productId === product.id));
+      if (product && !referenced) {
+        // Will be removed on confirm. Note if a set selling price will be lost.
+        setUnlinkConfirm(data);
+        return;
+      }
+    }
+
+    commit(data);
+  };
+
+  /** Persist the edit + run the product cascade. Assumes validation passed. */
+  const commit = (data: FormValues) => {
+    const category = data.category.trim();
+    const subcategory = data.subcategory.trim();
+
     // Register the (category, subcategory) in the shared taxonomies so an item
     // added here is selectable in Products, Sales and Expenses too.
     if (category) syncTaxonomy(data.category, data.subcategory);
 
-    updateItem(item.id, data); toast.success('Item updated');
+    // Cuttings: realize the packed/needs-packing split directly on the pools.
+    // Everything not-yet-sold on hand (beginning + needsPacking + availableForSale)
+    // is redistributed: `packedReady` becomes Ready for Sale, the rest Needs
+    // Packing, and any already-sold packed stock stays packed. beginningQty folds
+    // into the pools (set to 0) so it isn't double-counted. Ending qty is
+    // unchanged. Non-cuttings rows just save `data` as-is.
+    if (isCuttingItem) {
+      const ready = Math.min(Math.max(0, packedReady), movableCuttings);
+      updateItem(item.id, {
+        ...data,
+        beginningQty: 0, // cuttings never use a plain beginning qty
+        needsPacking: movableCuttings - ready,
+        packed: fixedPackedSold + ready,
+        availableForSale: ready,
+      });
+    } else {
+      updateItem(item.id, data);
+    }
+    toast.success(toastSuccess(ENTITY.inventoryItem, 'updated'));
 
-    // Product cascade: if we sell this (or it's an always-sell category), mirror
-    // it into Products for sale — seeding cost from this item's unit cost and
-    // leaving the selling price for the user. Uncheck on edit removes the
-    // auto-created product if it's safe (no price set, never sold); inventory is
-    // never touched.
-    const shouldSell = (sell || ALWAYS_SELL_CATEGORIES.includes(category)) && !!subcategory;
+    // Product cascade driven by the checkbox. "Always-sell" categories only
+    // DEFAULT the checkbox on (see its initial state); once the user explicitly
+    // unchecks it, we honor that and remove the product below. Inventory itself is
+    // never touched by this toggle.
+    const shouldSell = sell && !!subcategory;
     if (shouldSell) {
       const existed = !!findProduct(category, subcategory);
       upsertSellableProduct({
@@ -458,8 +608,12 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
       if (!existed) {
         toast.success(`Added "${categoryLabel(category, subcategory)}" to Products for sale`, { duration: 4000 });
       }
-    } else if (!sell && subcategory && !ALWAYS_SELL_CATEGORIES.includes(category)) {
-      const result = unlinkResellProduct(category, subcategory);
+    } else if (!sell && subcategory) {
+      // The user explicitly unchecked "Do you sell this?" (and confirmed when a
+      // product existed), so force-remove it from Products even if it had a
+      // selling price or is an always-sell category. A sales-referenced product
+      // is still kept (can't orphan history) — surfaced via the "kept" toast.
+      const result = unlinkResellProduct(category, subcategory, { force: true });
       if (result === 'removed') {
         toast(`Removed "${categoryLabel(category, subcategory)}" from Products for sale (kept in Inventory)`, { icon: '↩️', duration: 4000 });
       } else if (result === 'kept-sold') {
@@ -471,6 +625,7 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
   };
 
   return (
+    <>
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
       {!isEditing && (
         <DuplicateWarning
@@ -495,7 +650,7 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
               // variety doesn't linger after switching to, say, Packing Material.
               setValue('subcategory', '', { shouldDirty: true });
             }}
-            onCreate={(v) => { addCategory(v); syncTaxonomy(v, ''); }}
+            onCreate={(v) => { syncTaxonomy(v, ''); }}
             placeholder="Select…"
             error={errors.category?.message}
             createLabel="+ Create new type…"
@@ -545,22 +700,27 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
       </div>
       <div className="grid grid-cols-2 gap-4">
         <CreatableSelect
-          label="Unit"
+          label={FIELD.unit.label}
           required
           value={watch('unit')}
           options={unitOptions}
           onChange={(v) => setValue('unit', v, { shouldValidate: true, shouldDirty: true })}
           onCreate={addUnit}
           error={errors.unit?.message}
-          createLabel="+ Create new unit…"
+          createLabel="+ Add new unit…"
           newFieldLabel="New Unit"
           newFieldPlaceholder="e.g. crate"
         />
-        <InputField label="Unit Cost (₱)" type="number" step="0.01" error={errors.unitCost?.message} {...register('unitCost')} />
+        <InputField label={FIELD.unitCost.label} type="number" step="0.01" error={errors.unitCost?.message} {...register('unitCost')} />
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <InputField label="Beginning Qty" type="number" step="0.01" error={errors.beginningQty?.message} {...register('beginningQty')} />
-      </div>
+      {/* Cuttings don't use a plain Beginning Qty — their on-hand stock is tracked
+          as Packed (Ready for Sale) + Needs Packing below. Every other category
+          keeps the normal Beginning Qty input. */}
+      {!isCuttingItem && (
+        <div className="grid grid-cols-2 gap-4">
+          <InputField label="Beginning Qty" type="number" step="0.01" error={errors.beginningQty?.message} {...register('beginningQty')} />
+        </div>
+      )}
 
       {/* Purchased, Sold and Used are driven by their cascades — Expenses add to
           Purchased, received Sales add to Sold, and the "Record Usage" action on
@@ -582,6 +742,39 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
         />
       </div>
 
+      {/* Cuttings: on-hand stock is tracked as Packed (Ready for Sale) + Needs
+          Packing instead of a plain Beginning Qty. Always shown for cuttings so
+          it's the single entry point; sold/delivered packed stock stays fixed. */}
+      {isCuttingItem && (
+        <div className="p-3 rounded-lg border border-gray-200">
+          <InputField
+            label="Packed (of on-hand cuttings)"
+            type="number"
+            step="1"
+            min={0}
+            max={movableCuttings}
+            value={packedReady}
+            onChange={(e) =>
+              setPackedReady(Math.min(Math.max(0, Number(e.target.value) || 0), movableCuttings))
+            }
+          />
+          <p className="text-xs text-gray-400 mt-1">
+            {movableCuttings > 0 ? (
+              <>
+                <span className="font-medium text-leaf-700">{formatNumber(packedReady, 0)}</span> ready for sale ·{' '}
+                <span className="font-medium text-gold-700">{formatNumber(movableCuttings - packedReady, 0)}</span> need packing
+                {' '}(of {formatNumber(movableCuttings, 0)} on hand).
+                {curAvailableForSale < (item.packed ?? 0) && (
+                  <> {formatNumber((item.packed ?? 0) - curAvailableForSale, 0)} already sold/delivered stay packed.</>
+                )}
+              </>
+            ) : (
+              'No cuttings on hand yet. Stock arrives from Cuttings batches, purchases, or harvests.'
+            )}
+          </p>
+        </div>
+      )}
+
       <CheckboxField
         label="Do you sell this?"
         checked={sell}
@@ -589,12 +782,34 @@ function InventoryEditForm({ item, onClose }: { item: InventoryItem; onClose: ()
         hint="Adds it to Products for sale so it can be sold in Sales, seeding the cost from this item. Set the selling price in Products."
       />
 
-      <TextareaField label="Notes" {...register('notes')} rows={2} error={errors.notes?.message} />
+      <TextareaField label={FIELD.notes.label} {...register('notes')} rows={2} error={errors.notes?.message} />
 
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" type="button" onClick={onClose}>Cancel</Button>
         <Button type="submit" loading={isSubmitting}>{item ? 'Save Changes' : 'Add Item'}</Button>
       </div>
     </form>
+
+    {/* Confirm removing the product from Products when un-selling an item.
+        Kept OUTSIDE the <form> so its buttons don't act as form submits. */}
+    <ConfirmDialog
+      open={!!unlinkConfirm}
+      onClose={() => setUnlinkConfirm(null)}
+      onConfirm={() => {
+        const data = unlinkConfirm;
+        setUnlinkConfirm(null);
+        if (data) commit(data);
+      }}
+      title="Stop selling this item?"
+      message={
+        `"${categoryLabel(item.category, item.subcategory)}" will be removed from Products, so it can no longer be sold in Sales.` +
+        ((findProduct(item.category, item.subcategory)?.sellingPricePHP ?? 0) > 0
+          ? ' Its saved selling price will be discarded.'
+          : '') +
+        ` It stays in Inventory — you can re-add it anytime by checking "Do you sell this?" again.`
+      }
+      confirmLabel="Remove from Products"
+    />
+    </>
   );
 }

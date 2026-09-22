@@ -2,8 +2,12 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Vendor, VendorSupply } from '../types';
 import { generateId, now } from '../utils/id';
+import { PHILIPPINES } from '../constants/geography';
+import { cascadeVendorName } from './entityNameCascade';
 
-const SEED_VERSION = 2;
+// v3: adds a required { province, municipality } location.
+// v4: adds location.country (defaults to Philippines for existing records).
+const SEED_VERSION = 4;
 
 function v(vendor: string, supplies: VendorSupply[]): Vendor {
   return {
@@ -11,6 +15,7 @@ function v(vendor: string, supplies: VendorSupply[]): Vendor {
     vendor,
     contact: '',
     phone: '',
+    location: { country: PHILIPPINES, province: '', municipality: '' },
     supplies,
     notes: '',
     createdAt: now(),
@@ -44,7 +49,10 @@ function migrateLegacySupplies(vendor: LegacyVendor): VendorSupply[] {
 interface VendorState {
   vendors: Vendor[];
   _seeded: number;
-  addVendor: (data: Omit<Vendor, 'id' | 'createdAt' | 'updatedAt'>) => Vendor;
+  // `location` is optional here so vendors auto-created from other flows
+  // (expense/inventory entry) don't have to supply one — it defaults to empty
+  // and can be filled in later via the Vendor form (where it's required).
+  addVendor: (data: Omit<Vendor, 'id' | 'createdAt' | 'updatedAt' | 'location'> & { location?: Vendor['location'] }) => Vendor;
   updateVendor: (id: string, data: Partial<Omit<Vendor, 'id' | 'createdAt'>>) => void;
   deleteVendor: (id: string) => void;
   getVendor: (id: string) => Vendor | undefined;
@@ -65,6 +73,7 @@ export const useVendorStore = create<VendorState>()(
       addVendor: (data) => {
         const vendor: Vendor = {
           ...data,
+          location: data.location ?? { country: PHILIPPINES, province: '', municipality: '' },
           supplies: data.supplies ?? [],
           id: generateId(),
           createdAt: now(),
@@ -74,12 +83,19 @@ export const useVendorStore = create<VendorState>()(
         return vendor;
       },
 
-      updateVendor: (id, data) =>
+      updateVendor: (id, data) => {
         set((state) => ({
           vendors: state.vendors.map((vend) =>
             vend.id === id ? { ...vend, ...data, updatedAt: now() } : vend
           ),
-        })),
+        }));
+        // Propagate a renamed vendor to the expenses that snapshot the vendor
+        // name (matched by vendorId).
+        if (data.vendor !== undefined) {
+          const updated = get().vendors.find((v2) => v2.id === id);
+          if (updated) cascadeVendorName(id, updated.vendor);
+        }
+      },
 
       deleteVendor: (id) =>
         set((state) => ({ vendors: state.vendors.filter((vend) => vend.id !== id) })),
@@ -134,9 +150,15 @@ export const useVendorStore = create<VendorState>()(
       name: 'dfd-vendors',
       onRehydrateStorage: () => (state) => {
         if (!state) return;
-        // Migrate legacy free-text supplies into the structured list
+        // Migrate legacy free-text supplies into the structured list, and
+        // default the location on records that predate the location feature.
         state.vendors = state.vendors.map((vend) => ({
           ...vend,
+          location: {
+            country: vend.location?.country ?? PHILIPPINES,
+            province: vend.location?.province ?? '',
+            municipality: vend.location?.municipality ?? '',
+          },
           supplies: migrateLegacySupplies(vend),
         }));
         // Re-seed only if never seeded at this version AND there are no vendors

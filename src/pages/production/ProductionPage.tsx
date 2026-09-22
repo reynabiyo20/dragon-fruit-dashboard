@@ -1,13 +1,17 @@
-import { useMemo } from 'react';
 import { Plus, Factory } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
+import { useMemo, useState } from 'react';
+import toast from 'react-hot-toast';
 import { useProductionStore } from '../../store/productionStore';
 import { useSaleStore } from '../../store/saleStore';
 import { useFarmStore } from '../../store/farmStore';
+import { useEmployeeStore } from '../../store/employeeStore';
+import { useProductCategoryStore } from '../../store/productCategoryStore';
+import { syncTaxonomy } from '../../store/taxonomySync';
 import { totalHectares } from '../../utils/area';
 import type { ProductionEntry } from '../../types';
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -20,10 +24,12 @@ import { StatCard } from '../../components/ui/StatCard';
 import { SectionCard } from '../../components/ui/SectionCard';
 import { CollapsibleSection } from '../../components/ui/CollapsibleSection';
 import { RowActions } from '../../components/ui/RowActions';
+import { UndoBar } from '../../components/ui/UndoBar';
+import { BulkFieldEdit, type BulkFieldConfig } from '../../components/ui/BulkFieldEdit';
 import { formatNumber, formatDate, formatPHP } from '../../utils/format';
 import { useListCrud } from '../../hooks/useListCrud';
 import { useNowTick } from '../../hooks/useNowTick';
-import { estimateHarvestWindow, isInHarvestWindow } from '../../utils/date';
+import { sectionHarvestWindow, isInHarvestWindow } from '../../utils/date';
 import { BRAND, CHART_EXPENSE } from '../../constants/chartColors';
 import {
   AXIS_TICK, AXIS_LINE, GRID_STROKE,
@@ -34,9 +40,10 @@ import { BarChart, Bar } from 'recharts';
 import { ProductionForm } from './ProductionForm';
 
 export function ProductionPage() {
-  const { entries, deleteEntry, totalHarvested, totalGoodFruits, totalDamaged, totalWeightKg } = useProductionStore();
+  const { entries, deleteEntry, updateEntry, totalHarvested, totalGoodFruits, totalDamaged, totalWeightKg } = useProductionStore();
   const { sales } = useSaleStore();
   const farmSections = useFarmStore((s) => s.sections);
+  const activeEmployees = useEmployeeStore((s) => s.activeEmployees);
   const crud = useListCrud<ProductionEntry>();
   // Tick every minute so a row entering its harvest window lights up on its own,
   // without needing a page refresh.
@@ -61,6 +68,87 @@ export function ProductionPage() {
   /** Yield per hectare = total harvest weight ÷ cultivated area (normalized to ha). */
   const cultivatedHa = useMemo(() => totalHectares(farmSections), [farmSections]);
   const yieldPerHa = cultivatedHa > 0 ? totalW / cultivatedHa : 0;
+
+  // ── Bulk field edit (+ undo) ────────────────────────────────────────────────
+  // Farm block options mirror the form's section-type list; harvester options
+  // are the active employees (value = id so we can also store the name).
+  const blockOptions = useMemo(
+    () => [...new Set(farmSections.map((s) => s.sectionType))].sort().map((v) => ({ value: v, label: v })),
+    [farmSections],
+  );
+  // Resolve an entry's section for the area-level harvest-window estimate. The
+  // window now comes from the SECTION's lifecycle stage (tagged from a farm walk-
+  // through), not a per-harvest flowering date. Match by sectionId, falling back
+  // to the legacy free-text farmBlock (section type) for older entries.
+  const sectionsById = useMemo(() => new Map(farmSections.map((s) => [s.id, s])), [farmSections]);
+  const entryWindow = (e: ProductionEntry) => {
+    const sec = e.sectionId
+      ? sectionsById.get(e.sectionId)
+      : farmSections.find((s) => s.sectionType === e.farmBlock);
+    return sectionHarvestWindow(sec);
+  };
+  const harvesters = useMemo(() => activeEmployees(), [activeEmployees, entries]); // eslint-disable-line react-hooks/exhaustive-deps
+  const harvesterOptions = harvesters
+    .map((e) => ({ value: e.id, label: e.position ? `${e.name} — ${e.position}` : e.name }))
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+  // Variety options from the shared product taxonomy (same source as the form).
+  const categoryEntries = useProductCategoryStore((s) => s.entries);
+  const varietyOptions = useMemo(
+    () => [...new Set(categoryEntries.filter((e) => e.subcategory !== '').map((e) => e.subcategory))]
+      .sort().map((v) => ({ value: v, label: v })),
+    [categoryEntries],
+  );
+
+  // 'subcategory' holds the variety; harvestKind is the Fruit|Cuttings enum.
+  type BulkKey = 'date' | 'farmBlock' | 'harvestKind' | 'subcategory' | 'harvestedById' | 'plants' | 'weightKg';
+  const [bulkField, setBulkField] = useState<{ key: BulkKey; config: BulkFieldConfig } | null>(null);
+  const [bulkRows, setBulkRows] = useState<ProductionEntry[]>([]);
+  const [undoSnapshot, setUndoSnapshot] = useState<{ message: string; prev: { id: string; patch: Partial<ProductionEntry> }[] } | null>(null);
+
+  const bulkFields: { key: BulkKey; config: BulkFieldConfig }[] = [
+    { key: 'date', config: { label: 'Harvest Date', type: 'date' } },
+    { key: 'farmBlock', config: { label: 'Section', type: 'creatable', options: blockOptions, hint: 'The farm block / section this harvest came from.' } },
+    { key: 'harvestKind', config: { label: 'Harvest Kind', type: 'select', options: [{ value: 'Fruit', label: 'Fruit' }, { value: 'Cuttings', label: 'Cuttings' }] } },
+    { key: 'subcategory', config: { label: 'Variety', type: 'creatable', options: varietyOptions, onCreate: (v) => syncTaxonomy('Fruit', v), hint: 'The dragon-fruit variety harvested.' } },
+    { key: 'harvestedById', config: { label: 'Harvested By', type: 'select', options: harvesterOptions, hint: 'Credits the harvest to this worker (see Payroll performance).' } },
+    { key: 'plants', config: { label: 'Number of Plants', type: 'number', min: 0, step: '1' } },
+    { key: 'weightKg', config: { label: 'Weight (kg)', type: 'number', min: 0, step: '0.01' } },
+  ];
+
+  const openBulk = (key: BulkKey, config: BulkFieldConfig, rows: ProductionEntry[]) => {
+    if (rows.length === 0) return;
+    setBulkField({ key, config });
+    setBulkRows(rows);
+  };
+  const closeBulk = () => { setBulkField(null); setBulkRows([]); };
+
+  const applyBulk = (value: string | number) => {
+    if (!bulkField) return;
+    const { key, config } = bulkField;
+    const count = bulkRows.length;
+
+    if (key === 'harvestedById') {
+      // Store id + snapshot the resolved name so undo restores both.
+      const emp = harvesters.find((h) => h.id === value);
+      const prev = bulkRows.map((e) => ({ id: e.id, patch: { harvestedById: e.harvestedById ?? '', harvestedByName: e.harvestedByName ?? '' } as Partial<ProductionEntry> }));
+      bulkRows.forEach((e) => updateEntry(e.id, { harvestedById: String(value), harvestedByName: emp?.name ?? '' }));
+      setUndoSnapshot({ message: `Set harvested by to "${emp?.name ?? '—'}" for ${count} entr${count !== 1 ? 'ies' : 'y'}.`, prev });
+    } else {
+      const prev = bulkRows.map((e) => ({ id: e.id, patch: { [key]: e[key] } as Partial<ProductionEntry> }));
+      bulkRows.forEach((e) => updateEntry(e.id, { [key]: value } as Partial<ProductionEntry>));
+      const shown = config.type === 'number' ? String(value) : `"${value}"`;
+      setUndoSnapshot({ message: `Set ${config.label.toLowerCase()} to ${shown} for ${count} entr${count !== 1 ? 'ies' : 'y'}.`, prev });
+    }
+
+    toast.success(`Updated ${config.label.toLowerCase()} for ${count} entr${count !== 1 ? 'ies' : 'y'}`);
+    closeBulk();
+  };
+
+  const undoBulk = () => {
+    if (!undoSnapshot) return;
+    undoSnapshot.prev.forEach(({ id, patch }) => updateEntry(id, patch));
+    setUndoSnapshot(null);
+  };
 
   /** Damage rate trend — per entry, sorted by date */
   const damageTrend = useMemo(() => {
@@ -101,8 +189,10 @@ export function ProductionPage() {
   }, [entries]);
 
   const columns: Column<ProductionEntry>[] = [
-    { key: 'date',             header: 'Date',         accessor: (e) => formatDate(e.date),                                             sortValue: (e) => e.date },
+    { key: 'date',             header: 'Harvest Date', accessor: (e) => formatDate(e.date),                                             sortValue: (e) => e.date },
     { key: 'farmBlock',        header: 'Farm Block',   accessor: (e) => e.farmBlock || '—',                                             sortValue: (e) => e.farmBlock },
+    { key: 'harvestKind',      header: 'Kind',         accessor: (e) => e.harvestKind ? <span className="text-xs font-medium text-primary-700 bg-primary-50 px-2 py-0.5 rounded-full">{e.harvestKind}</span> : <span className="text-gray-300">—</span>, sortValue: (e) => e.harvestKind ?? '' },
+    { key: 'variety',          header: 'Variety',      accessor: (e) => e.subcategory ? <span className="text-xs font-medium text-berry-700 bg-berry-50 px-2 py-0.5 rounded-full">{e.subcategory}</span> : <span className="text-gray-300">—</span>, sortValue: (e) => e.subcategory ?? '' },
     { key: 'harvestedBy',      header: 'Harvested By', accessor: (e) => e.harvestedByName || '—',                                       sortValue: (e) => e.harvestedByName ?? '' },
     { key: 'plants',           header: 'Plants',       accessor: (e) => formatNumber(e.plants, 0),                                      sortValue: (e) => e.plants },
     { key: 'fruitsHarvested',  header: 'Harvested',    accessor: (e) => formatNumber(e.fruitsHarvested, 0),                             sortValue: (e) => e.fruitsHarvested },
@@ -135,12 +225,13 @@ export function ProductionPage() {
       key: 'harvestWindow',
       header: 'Harvest Window',
       accessor: (e) => {
-        const w = estimateHarvestWindow(e.floweringDate);
+        const w = entryWindow(e);
         if (!w) return <span className="text-gray-300">—</span>;
         const due = isInHarvestWindow(w, nowTick);
         return (
           <div className="flex flex-col gap-0.5">
             <span className={due ? 'font-semibold text-orange-700' : 'text-gray-600'}>{w.label}</span>
+            <span className="text-xs text-gray-400">from section stage</span>
             {due && (
               <span className="inline-flex items-center gap-1 text-xs font-bold text-orange-600">
                 ⚠️ Ready to Harvest Fruit
@@ -149,7 +240,7 @@ export function ProductionPage() {
           </div>
         );
       },
-      sortValue: (e) => estimateHarvestWindow(e.floweringDate)?.date ?? '',
+      sortValue: (e) => entryWindow(e)?.date ?? '',
     },
     { key: 'notes',    header: 'Notes',       accessor: (e) => <span className="text-xs text-gray-400">{e.notes || '—'}</span> },
   ];
@@ -157,7 +248,7 @@ export function ProductionPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Dragon Fruit Production"
+        title="Farm Production"
         subtitle={`${entries.length} harvest entr${entries.length !== 1 ? 'ies' : 'y'}`}
         actions={<Button icon={<Plus className="w-4 h-4" />} onClick={crud.openAdd}>Log Harvest</Button>}
       />
@@ -318,6 +409,14 @@ export function ProductionPage() {
         </CollapsibleSection>
       )}
 
+      {undoSnapshot && (
+        <UndoBar
+          message={undoSnapshot.message}
+          onUndo={undoBulk}
+          onDismiss={() => setUndoSnapshot(null)}
+        />
+      )}
+
       {entries.length === 0 ? (
         <EmptyState
           icon={Factory}
@@ -332,18 +431,29 @@ export function ProductionPage() {
           keyExtractor={(e) => e.id}
           searchFilter={(e, q) =>
             e.farmBlock.toLowerCase().includes(q) ||
+            (e.subcategory ?? '').toLowerCase().includes(q) ||
+            (e.harvestKind ?? '').toLowerCase().includes(q) ||
             (e.harvestedByName ?? '').toLowerCase().includes(q) ||
             e.date.includes(q)
           }
-          searchPlaceholder="Search by farm block, harvester, or date…"
+          searchPlaceholder="Search by block, variety, harvester, or date…"
           // Soft-orange highlight when a batch has entered its estimated harvest
           // window (current month + week matches), so it can't be missed.
           rowClassName={(e) =>
-            isInHarvestWindow(estimateHarvestWindow(e.floweringDate), nowTick)
+            isInHarvestWindow(entryWindow(e), nowTick)
               ? 'bg-orange-50 hover:bg-orange-100'
               : ''
           }
+          bulkActions={{
+            noun: 'entry',
+            actions: bulkFields.map(({ key, config }) => ({
+              label: `Set ${config.label}`,
+              onClick: (rows: ProductionEntry[]) => openBulk(key, config, rows),
+            })),
+            onDelete: (rows) => rows.forEach((e) => deleteEntry(e.id)),
+          }}
           actions={(e) => <RowActions onEdit={() => crud.openEdit(e)} onDelete={() => crud.requestDelete(e)} />}
+          persistKey="production"
           defaultSort={{ key: 'date', dir: 'asc' }}
           getRecency={(e) => e.createdAt}
         />
@@ -358,6 +468,15 @@ export function ProductionPage() {
         onClose={crud.cancelDelete}
         onConfirm={() => crud.confirmDelete((e) => deleteEntry(e.id))}
         message={`Delete harvest entry for ${formatDate(crud.deleteTarget?.date ?? '')}? This cannot be undone.`}
+      />
+
+      {/* Bulk-edit one field across the selected harvest entries (undoable) */}
+      <BulkFieldEdit
+        open={!!bulkField}
+        onClose={closeBulk}
+        field={bulkField?.config ?? null}
+        count={bulkRows.length}
+        onApply={applyBulk}
       />
     </div>
   );

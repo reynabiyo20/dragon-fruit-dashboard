@@ -59,7 +59,6 @@ describe('cutting batch replant allocation → planted flow', () => {
       sourceCostPerCutting: 35,
       graftCostPerCutting: 0,
       rootWeeks: 3,
-      quantitySold: 0,
       notes: '',
     });
   }
@@ -91,7 +90,7 @@ describe('cutting batch replant allocation → planted flow', () => {
       cuttingType: 'Grafted with Roots',
       harvestDate: longAgo, dateSourced: longAgo, dateGrafted: '',
       quantitySourced: 20, sourceCostPerCutting: 40, graftCostPerCutting: 5,
-      rootWeeks: 3, quantitySold: 0, notes: '',
+      rootWeeks: 3, notes: '',
     });
 
     const row = useInventoryStore.getState().findByCategorySub(CUTTINGS_PRODUCT_TYPE, 'Palora Yellow');

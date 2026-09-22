@@ -13,7 +13,7 @@ import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import { Button } from '../../components/ui/Button';
 import { formatPHP } from '../../utils/format';
-import { INVENTORY_LINKED_TYPES } from '../../constants';
+import { INVENTORY_LINKED_TYPES, CUTTING_TYPE_OPTIONS, CUTTING_TYPE_GRAFTED } from '../../constants';
 
 /** Categories that always cascade into the sellable Products list. */
 const ALWAYS_RESELL_CATEGORIES = INVENTORY_LINKED_TYPES as readonly string[];
@@ -487,12 +487,15 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
             <div className="space-y-2">
               <div className="hidden sm:grid grid-cols-12 gap-2 px-1 text-xs font-medium text-gray-400">
                 <span className="col-span-4">Item</span>
-                <span className="col-span-2">Qty</span>
-                <span className="col-span-2">Unit</span>
-                <span className="col-span-2">Price</span>
+                <span className="col-span-2">Qty <span className="text-red-500">*</span></span>
+                <span className="col-span-2">Unit <span className="text-red-500">*</span></span>
+                <span className="col-span-2">Price <span className="text-red-500">*</span></span>
                 <span className="col-span-1 text-right">Total</span>
                 <span className="col-span-1" />
               </div>
+              <p className="sm:hidden text-xs text-gray-400 px-1">
+                Quantity, unit &amp; price are required <span className="text-red-500">*</span> for every item.
+              </p>
               {items.map((it, i) => (
                 <div key={`${it.productId}-${i}`} className="grid grid-cols-12 gap-2 items-center">
                   <div className="col-span-12 sm:col-span-4 min-w-0">
@@ -517,19 +520,21 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                         We resell this
                       </label>
                     )}
-                    {/* Cuttings only: packed (Ready for Sale) vs bare (Needs
-                        Packing). Rendered as an obvious labeled segmented toggle
-                        (mirroring the single-expense form) so the condition
-                        isn't buried in a tiny dropdown. */}
+                    {/* Cuttings only: what this line is for — packed (Ready for
+                        Sale), bare (Needs Packing), or replant (creates a
+                        Propagation batch). Rendered as an obvious labeled
+                        segmented toggle (mirroring the single-expense form) so the
+                        purpose isn't buried in a tiny dropdown. */}
                     {isCuttingCat(it.category) && (() => {
                       const condition = it.cuttingState ?? 'packed';
                       return (
                         <div className="mt-1.5">
-                          <span className="block text-xs font-medium text-gray-600 mb-1">Condition</span>
+                          <span className="block text-xs font-medium text-gray-600 mb-1">Purpose</span>
                           <div className="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-50">
                             {([
                               { value: 'packed', label: 'Already packed' },
                               { value: 'bare', label: 'Bare / needs packing' },
+                              { value: 'replant', label: 'For replant (farm)' },
                             ] as const).map((opt) => (
                               <button
                                 key={opt.value}
@@ -550,8 +555,30 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                           <p className="text-xs text-gray-400 mt-1">
                             {condition === 'packed'
                               ? 'Adds to Ready for Sale — sellable right away.'
-                              : 'Adds to Needs Packing — pack it in Inventory before it can be sold.'}
+                              : condition === 'bare'
+                                ? 'Adds to Needs Packing — pack it in Inventory before it can be sold.'
+                                : 'Creates a Propagation batch reserved for the farm — not added to sellable stock.'}
                           </p>
+                          {/* Replant: capture the cutting type so the Propagation
+                              batch tracks the right rooting/ready timeline. */}
+                          {condition === 'replant' && (
+                            <div className="mt-1.5">
+                              <span className="block text-xs font-medium text-gray-600 mb-1">Cutting Type</span>
+                              <select
+                                aria-label={`Cutting type for ${it.name}`}
+                                value={it.cuttingType ?? CUTTING_TYPE_GRAFTED}
+                                onChange={(e) => updateLine(i, { cuttingType: e.target.value })}
+                                className="w-full sm:w-56 px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-500"
+                              >
+                                {CUTTING_TYPE_OPTIONS.map((o) => (
+                                  <option key={o.value} value={o.value}>{o.label}</option>
+                                ))}
+                              </select>
+                              <p className="text-xs text-gray-400 mt-1">
+                                Rooted stock is ready sooner than unrooted cuttings.
+                              </p>
+                            </div>
+                          )}
                         </div>
                       );
                     })()}
@@ -559,29 +586,59 @@ export function ProductItemsPicker({ vendorId, vendorName, items, onChange }: Pr
                   <input
                     type="number"
                     step="0.01"
+                    required
                     aria-label={`Quantity for ${it.name}`}
                     value={it.quantity}
                     onChange={(e) => updateLine(i, { quantity: Number(e.target.value) })}
-                    className="col-span-4 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    className={[
+                      'col-span-4 sm:col-span-2 px-2 py-1.5 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500',
+                      (Number(it.quantity) || 0) <= 0 ? 'border-red-300 bg-red-50' : 'border-gray-300',
+                    ].join(' ')}
                   />
-                  <select
-                    aria-label={`Unit for ${it.name}`}
-                    value={it.unit}
-                    onChange={(e) => updateLine(i, { unit: e.target.value })}
-                    className="col-span-4 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  >
-                    <option value="">—</option>
-                    {unitOptions.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
+                  {(() => {
+                    // A line's unit is resolved from the product catalog and can
+                    // differ in casing from the shared unit list (e.g. a legacy
+                    // "Piece" vs the list's "piece"). A <select> only selects an
+                    // <option> whose value matches EXACTLY, so a casing drift would
+                    // silently render the blank "—" even though the line has a unit.
+                    // Reuse the option's canonical casing when one matches
+                    // case-insensitively; otherwise surface the raw value as its
+                    // own option so it stays visible and selected.
+                    const trimmed = it.unit.trim();
+                    const canonical = unitOptions.find(
+                      (o) => o.value.trim().toLowerCase() === trimmed.toLowerCase(),
+                    );
+                    const selectValue = canonical ? canonical.value : it.unit;
+                    return (
+                      <select
+                        aria-label={`Unit for ${it.name}`}
+                        required
+                        value={selectValue}
+                        onChange={(e) => updateLine(i, { unit: e.target.value })}
+                        className={[
+                          'col-span-4 sm:col-span-2 px-2 py-1.5 text-sm border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-500',
+                          !trimmed ? 'border-red-300 bg-red-50' : 'border-gray-300',
+                        ].join(' ')}
+                      >
+                        <option value="">—</option>
+                        {trimmed && !canonical && <option value={it.unit}>{it.unit}</option>}
+                        {unitOptions.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    );
+                  })()}
                   <input
                     type="number"
                     step="0.01"
+                    required
                     aria-label={`Price for ${it.name}`}
                     value={it.unitPrice}
                     onChange={(e) => updateLine(i, { unitPrice: Number(e.target.value) })}
-                    className="col-span-3 sm:col-span-2 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    className={[
+                      'col-span-3 sm:col-span-2 px-2 py-1.5 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500',
+                      (Number(it.unitPrice) || 0) <= 0 ? 'border-red-300 bg-red-50' : 'border-gray-300',
+                    ].join(' ')}
                   />
                   <span className="col-span-8 sm:col-span-1 text-sm text-right font-medium text-gray-800">
                     {formatPHP(it.total)}

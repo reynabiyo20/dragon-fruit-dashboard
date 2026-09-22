@@ -1,32 +1,39 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Trash2, AlertCircle, UserPlus, PackagePlus } from 'lucide-react';
+import { Trash2, AlertCircle, UserPlus, PackagePlus, Plus } from 'lucide-react';
 import toast from 'react-hot-toast';
-import type { Sale, SaleItem, Customer } from '../../types';
+import type { Sale, SaleItem, Customer, Currency } from '../../types';
 import { useSaleStore } from '../../store/saleStore';
 import { useCustomerStore } from '../../store/customerStore';
 import { useProductStore } from '../../store/productStore';
+import { useProductCategoryStore } from '../../store/productCategoryStore';
+import { syncTaxonomy } from '../../store/taxonomySync';
 import { useEmployeeStore } from '../../store/employeeStore';
 import { useCommissionStore } from '../../store/commissionStore';
 import { useCuttingStore } from '../../store/cuttingStore';
 import { useInventoryStore } from '../../store/inventoryStore';
+import { computeSaleDeliveryReadiness } from '../../utils/cuttingPacking';
+import { useSaleDraftStore, type SaleDraft } from '../../store/saleDraftStore';
 import { useEntityMatch } from '../../hooks/useEntityMatch';
 import { EntityMatchSuggestions } from '../../components/forms/EntityMatchSuggestions';
 import { InputField, SelectField, TextareaField, CheckboxField, DisplayField } from '../../components/forms/FormField';
 import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import { Button } from '../../components/ui/Button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { useSaleTypeStore } from '../../store/optionStores';
-import { formatPHP, formatDate, categoryLabel } from '../../utils/format';
+import { useSaleTypeStore, useUnitStore } from '../../store/optionStores';
+import { formatPHP, formatUSD, formatDate, categoryLabel } from '../../utils/format';
+import { COUNTRY_OPTIONS, PHILIPPINES, countryOf, isInternationalLocation } from '../../constants/geography';
 import { isFutureDate, todayISO } from '../../utils/date';
 import { generateId } from '../../utils/id';
+import { isOfficialInvoice } from '../../utils/invoice';
 import {
   PAYMENT_OPTIONS, METHODS_REQUIRING_DETAILS, MANUAL_ENTRY, ONLINE_ORDERS,
   CUTTINGS_PRODUCT_TYPE, CUTTING_SMALL_ORDER_THRESHOLD, CUTTING_SMALL_ORDER_SURCHARGE,
   CUTTING_TYPE_GRAFTED,
 } from '../../constants';
+import { ENTITY, toastSuccess, VALIDATION, FIELD } from '../../constants/messages';
 import type { Product } from '../../types';
 
 /** Whether a product is a cutting (subject to the small-order surcharge rule). */
@@ -46,25 +53,34 @@ function isStockProduct(product: Product | undefined): boolean {
 
 const schema = z
   .object({
-    date: z.string().min(1, 'Date is required'),
+    date: z.string().min(1, VALIDATION.dateRequired),
     invoiceNumber: z.string(),
     customerId: z.string(),
-    customerName: z.string().min(1, 'Customer is required'),
+    customerName: z.string().min(1, VALIDATION.customerRequired),
+    // Country of the customer/sale. Drives the currency: Philippines → PHP,
+    // any other country → USD (kept strictly separate — never converted).
+    country: z.string(),
     // How this sale happened (walk-in, online, …)
     saleType: z.string(),
     // Online-order contact fields (validated conditionally below)
     customerPhone: z.string(),
     customerFbMessenger: z.string(),
     customerAddress: z.string(),
-    paymentMethod: z.string().min(1, 'Payment method is required'),
+    paymentMethod: z.string(),
     paymentDetails: z.string(),
     paid: z.boolean(),
     soldByEmployeeId: z.string(),
     notes: z.string(),
   })
-  // Payment details required for certain methods
+  // A paid sale needs a payment method; an unpaid one is "Pending payment"
+  // (no method needed — it flows to Outstanding until settled).
   .refine(
-    (d) => !METHODS_REQUIRING_DETAILS.includes(d.paymentMethod) || d.paymentDetails.trim().length > 0,
+    (d) => !d.paid || d.paymentMethod.trim().length > 0,
+    { path: ['paymentMethod'], message: VALIDATION.paymentMethodRequired }
+  )
+  // Payment details required for certain methods — only when the sale is paid.
+  .refine(
+    (d) => !d.paid || !METHODS_REQUIRING_DETAILS.includes(d.paymentMethod) || d.paymentDetails.trim().length > 0,
     { path: ['paymentDetails'], message: 'Payment details are required for this payment method' }
   )
   // Online-order sales require a delivery address
@@ -90,6 +106,16 @@ interface EditableItem extends SaleItem {
 }
 
 export function SaleForm({ sale, onClose }: SaleFormProps) {
+  // In-progress draft (new sales only). Read once at mount so its values seed
+  // the useState / RHF initializers below — restoring through initializers (not
+  // post-mount setValue) keeps the form's reset/sync effects from treating a
+  // restore as a user edit.
+  const isNew = !sale;
+  const draftSnapshot = useRef(isNew ? useSaleDraftStore.getState().draft : null);
+  const saleDraft = draftSnapshot.current ?? {};
+  const patchSaleDraft = useSaleDraftStore((s) => s.patch);
+  const clearSaleDraft = useSaleDraftStore((s) => s.clear);
+
   const { addSale, updateSale } = useSaleStore();
   const { customers, addCustomer } = useCustomerStore();
   // Editable sale-type list (walk-in, online, …), shared with Settings
@@ -97,6 +123,14 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
   const addSaleType = useSaleTypeStore((s) => s.add);
   const saleTypeOptions = saleTypeValues.map((v) => ({ value: v, label: v }));
   const { products } = useProductStore();
+  const addProduct = useProductStore((s) => s.addProduct);
+  const updateProduct = useProductStore((s) => s.updateProduct);
+  const findSellableProduct = useProductStore((s) => s.findByCategorySub);
+  // Products & Sales share this taxonomy — drives the cascading Category /
+  // Subcategory filters and inline creation below.
+  const { subcategoriesFor, addEntry } = useProductCategoryStore();
+  const unitOptions = useUnitStore((s) => s.values).map((v) => ({ value: v, label: v }));
+  const addUnit = useUnitStore((s) => s.add);
   const { employees } = useEmployeeStore();
   const { setForSale, removeForSale } = useCommissionStore();
   const recordCuttingPurchase = useCuttingStore((s) => s.recordCustomerPurchase);
@@ -120,6 +154,24 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
     return row ? row.endingQty : undefined;
   };
 
+  /**
+   * Ready-to-sell (already packed) stock for a CUTTING product — the inventory
+   * `availableForSale` pool. Cuttings on hand split into two pools: `packed`
+   * (mirrored into availableForSale, ready to go) and `needsPacking` (bare stock
+   * that must be packed first). The on-hand total (endingQty) covers both, so a
+   * sale can be within stock yet still require packing before it can ship. This
+   * is the "ready" portion used to detect that shortfall. Returns undefined for
+   * non-cutting products (packing doesn't apply) or when there's no inventory row.
+   */
+  const readyStockOf = (product: Product | undefined): number | undefined => {
+    if (!isCuttingProduct(product) || !product) return undefined;
+    const norm = (s: string) => s.trim().toLowerCase();
+    const row = inventoryItems.find(
+      (i) => norm(i.category) === norm(product.category) && norm(i.subcategory) === norm(product.subcategory),
+    );
+    return row ? row.availableForSale ?? 0 : undefined;
+  };
+
   // Salespeople = employees with a commission % > 0
   const salespeople = employees.filter((e) => e.commission > 0);
 
@@ -127,6 +179,13 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
   // capture which lines carry a custom (overridden) surcharge so a saved
   // discount isn't reset by the aggregate rule on edit.
   const [initialItems, initialOverrides] = (() => {
+    // Restore an in-progress draft's lines (new sales only), keeping their stable
+    // _key so the surcharge/quantity maps below stay aligned. Otherwise build
+    // from the edited sale's saved items.
+    if (isNew && (saleDraft.items?.length ?? 0) > 0) {
+      const rows = saleDraft.items as EditableItem[];
+      return [rows, saleDraft.surchargeOverridden ?? {}] as const;
+    }
     const rows: EditableItem[] = (sale?.items ?? []).map((i) => ({
       ...i,
       surcharge: (i as SaleItem).surcharge ?? 0,
@@ -151,46 +210,180 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
   // cuttings surcharge/warning until a real quantity is confirmed. Existing
   // (saved) lines count as already-entered.
   const [quantityEntered, setQuantityEntered] = useState<Record<string, boolean>>(() => {
+    // Restore the draft's per-line "quantity entered" flags when present;
+    // otherwise treat every seeded (saved) line as already-entered.
+    if (isNew && saleDraft.quantityEntered) return saleDraft.quantityEntered;
     const seeded: Record<string, boolean> = {};
     initialItems.forEach((r) => { seeded[r._key] = true; });
     return seeded;
   });
-  const [isPaid, setIsPaid] = useState(sale?.paid ?? false);
-  const [isDelivered, setIsDelivered] = useState(sale?.delivered ?? false);
+  const [isPaid, setIsPaid] = useState(saleDraft.isPaid ?? sale?.paid ?? false);
+  const [isDelivered, setIsDelivered] = useState(saleDraft.isDelivered ?? sale?.delivered ?? false);
   // Per-item validation errors keyed by _key
   const [itemErrors, setItemErrors] = useState<Record<string, string>>({});
   // Bulk product-picker (checklist) open state + search filter
   const [productPickerOpen, setProductPickerOpen] = useState(false);
   const [productSearch, setProductSearch] = useState('');
+  // Cascading taxonomy filters (both optional). Subcategory is scoped to the
+  // active category; when no category is chosen it shows every subcategory.
+  const [activeCategory, setActiveCategory] = useState('');
+  const [activeSubcategory, setActiveSubcategory] = useState('');
+  // Inline "new product" create panel (category + subcategory + default unit).
+  const [showCreateProduct, setShowCreateProduct] = useState(false);
+  const [newCategory, setNewCategory] = useState('');
+  const [newSubcategory, setNewSubcategory] = useState('');
+  const [newUnit, setNewUnit] = useState('');
+  const [createError, setCreateError] = useState('');
   // Holds validated form data pending a future-date confirmation (null = none)
   const [pendingFutureData, setPendingFutureData] = useState<FormValues | null>(null);
 
   const productLabel = (p: Product) => categoryLabel(p.category, p.subcategory);
-  // Products for the bulk checklist, sorted by label and filtered by the search box.
-  const pickerProducts = products
-    .map((p) => ({ product: p, label: productLabel(p) }))
-    .filter(({ label }) => label.toLowerCase().includes(productSearch.trim().toLowerCase()))
+  const norm = (s: string) => s.trim().toLowerCase();
+
+  // ── Cascading filter option lists — derived from EXISTING PRODUCTS ───────────
+  // A sale can only pick products that exist in the Products store, so the
+  // Category / Subcategory filters offer only categories/varieties that actually
+  // have a product. (Brand-new ones are added via the "New product" panel below,
+  // which uses the full managed taxonomy.)
+  const sortAlpha = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+  const productCategories = useMemo(
+    () => [...new Set(products.map((p) => p.category.trim()).filter(Boolean))].sort(sortAlpha),
+    [products],
+  );
+  const categoryOptions = productCategories.map((c) => ({ value: c, label: c }));
+  // Subcategories that have a product, scoped to the active category. With no
+  // category chosen, offer every product subcategory (deduped, sorted).
+  const subcategoryList = useMemo(() => {
+    const subs = products
+      .filter((p) => (activeCategory ? norm(p.category) === norm(activeCategory) : true))
+      .map((p) => p.subcategory.trim())
+      .filter(Boolean);
+    return [...new Set(subs)].sort(sortAlpha);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products, activeCategory]);
+  const subcategoryOptions = subcategoryList.map((s) => ({ value: s, label: s }));
+
+  // ── Checklist entries ───────────────────────────────────────────────────────
+  // The checklist lists only EXISTING products (a sale can't pick a category/
+  // subcategory that isn't a real product). A product that doesn't exist yet is
+  // added via the "New product" panel, which creates it and then it appears here.
+  type PickerEntry = { key: string; label: string; category: string; subcategory: string; product: Product };
+
+  const matchesFilters = (category: string, subcategory: string, label: string): boolean =>
+    (activeCategory ? norm(category) === norm(activeCategory) : true) &&
+    (activeSubcategory ? norm(subcategory) === norm(activeSubcategory) : true) &&
+    label.toLowerCase().includes(productSearch.trim().toLowerCase());
+
+  const pickerEntries: PickerEntry[] = products
+    .map((p): PickerEntry => ({
+      key: `p:${p.id}`,
+      label: productLabel(p),
+      category: p.category,
+      subcategory: p.subcategory,
+      product: p,
+    }))
+    .filter((e) => matchesFilters(e.category, e.subcategory, e.label))
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+
+  // ── Inline taxonomy creation ────────────────────────────────────────────────
+  /**
+   * The Subcategory FILTER's "New product…" option opens the dedicated New
+   * Product panel (prefilled) rather than creating on the spot — a new variety
+   * needs a default unit, captured there.
+   */
+  const handleCreateSubcategory = (value: string) => {
+    setNewCategory(activeCategory);
+    setNewSubcategory(value.trim());
+    setNewUnit('');
+    setCreateError('');
+    setShowCreateProduct(true);
+  };
+
+  const resetCreateProduct = () => {
+    setNewCategory('');
+    setNewSubcategory('');
+    setNewUnit('');
+    setCreateError('');
+    setShowCreateProduct(false);
+  };
+
+  // Subcategory options for the New Product panel, scoped to the panel's own
+  // category selection (independent of the active filter).
+  const newSubcategoryOptions = (newCategory ? subcategoriesFor(newCategory) : []).map((s) => ({ value: s, label: s }));
+
+  /**
+   * Create (or bind to) a category + subcategory product with a default unit.
+   * Case-insensitive dedup: if the product already exists it's reused (and a
+   * missing unit backfilled) rather than duplicated. Registers the pair in both
+   * shared taxonomies and applies the new variety to the filters so it shows in
+   * the checklist immediately.
+   */
+  const handleCreateProduct = () => {
+    const cat = newCategory.trim();
+    const sub = newSubcategory.trim();
+    const unit = newUnit.trim();
+    if (!cat) { setCreateError('Category is required'); return; }
+    if (!sub) { setCreateError('Subcategory is required'); return; }
+
+    addEntry(cat, sub);
+    syncTaxonomy(cat, sub);
+
+    const existing = findSellableProduct(cat, sub);
+    if (existing) {
+      // Bind to the existing product; backfill its unit only if it has none.
+      if (unit && !existing.unit.trim()) {
+        updateProduct(existing.id, { unit });
+      }
+      toast.success(`Using existing "${categoryLabel(cat, sub)}"`);
+    } else {
+      addProduct({
+        category: cat,
+        subcategory: sub,
+        costPHP: 0,
+        sellingPricePHP: 0,
+        costUSD: 0,
+        sellingPriceUSD: 0,
+        unit,
+        notes: '',
+      });
+      toast.success(`Added "${categoryLabel(cat, sub)}"${unit ? ` (${unit})` : ''}`);
+    }
+
+    // Surface the new variety through the filters so it appears in the checklist.
+    setActiveCategory(cat);
+    setActiveSubcategory(sub);
+    resetCreateProduct();
+  };
 
   // Resolve the original customer (for prefilling online-order contact fields)
   const existingCustomer = sale ? customers.find((c) => c.id === sale.customerId) : undefined;
 
-  const { register, handleSubmit, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
+  const { register, handleSubmit, setValue, watch, trigger, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
+    mode: 'onTouched',
+    // Restore any in-progress draft first (new sales only), then the edited
+    // sale's values, then blank/today defaults.
     defaultValues: {
-      date: sale?.date ?? todayISO(),
-      invoiceNumber: sale?.invoiceNumber ?? '',
-      customerId: sale?.customerId ?? '',
-      customerName: sale?.customerName ?? '',
-      customerPhone: existingCustomer?.phone ?? '',
-      customerFbMessenger: existingCustomer?.fbMessengerName ?? '',
-      customerAddress: existingCustomer?.address ?? '',
-      saleType: sale?.saleType ?? '',
-      paymentMethod: sale?.paymentMethod ?? 'Cash',
-      paymentDetails: sale?.paymentDetails ?? '',
-      paid: sale?.paid ?? false,
-      soldByEmployeeId: sale?.soldByEmployeeId ?? '',
-      notes: sale?.notes ?? '',
+      date: saleDraft.date ?? sale?.date ?? todayISO(),
+      invoiceNumber: saleDraft.invoiceNumber ?? sale?.invoiceNumber ?? '',
+      customerId: saleDraft.customerId ?? sale?.customerId ?? '',
+      customerName: saleDraft.customerName ?? sale?.customerName ?? '',
+      // Country drives the currency. On edit prefer the linked customer's country;
+      // else infer from the saved sale currency (USD → international placeholder).
+      country: saleDraft.country ?? (existingCustomer
+        ? countryOf(existingCustomer.location)
+        : sale?.currency === 'USD' ? 'Other' : PHILIPPINES),
+      // Prefer the contact snapshot saved on the sale (survives edits even for a
+      // one-off customer), then fall back to the linked customer's record.
+      customerPhone: saleDraft.customerPhone ?? sale?.customerPhone ?? existingCustomer?.phone ?? '',
+      customerFbMessenger: saleDraft.customerFbMessenger ?? sale?.customerFbMessenger ?? existingCustomer?.fbMessengerName ?? '',
+      customerAddress: saleDraft.customerAddress ?? sale?.customerAddress ?? existingCustomer?.address ?? '',
+      saleType: saleDraft.saleType ?? sale?.saleType ?? '',
+      paymentMethod: saleDraft.paymentMethod ?? sale?.paymentMethod ?? 'Cash',
+      paymentDetails: saleDraft.paymentDetails ?? sale?.paymentDetails ?? '',
+      paid: saleDraft.paid ?? sale?.paid ?? false,
+      soldByEmployeeId: saleDraft.soldByEmployeeId ?? sale?.soldByEmployeeId ?? '',
+      notes: saleDraft.notes ?? sale?.notes ?? '',
     },
   });
 
@@ -248,8 +441,62 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
   const saleType = watch('saleType');
   const paymentMethod = watch('paymentMethod');
   const isOnlineOrder = saleType === ONLINE_ORDERS;
-  const paymentDetailsRequired = METHODS_REQUIRING_DETAILS.includes(paymentMethod);
+  const paymentDetailsRequired = isPaid && METHODS_REQUIRING_DETAILS.includes(paymentMethod);
   const isManualEntry = selectedCustomerId === MANUAL_ENTRY;
+
+  // ── Currency (international support) ─────────────────────────────────────────
+  // A sale is international (USD) when its country is outside the Philippines.
+  // Local sales stay PHP. PHP and USD are never mixed or converted.
+  const saleCountry = watch('country');
+  const isInternational = isInternationalLocation({ country: saleCountry, province: '', municipality: '' });
+  const currency: Currency = isInternational ? 'USD' : 'PHP';
+  const money = (amount: number) => (currency === 'USD' ? formatUSD(amount) : formatPHP(amount));
+  const priceLabel = currency === 'USD' ? 'Unit Price ($)' : 'Unit Price (₱)';
+
+  // Toggling Paid: keep the RHF `paid` field in sync so the resolver knows
+  // whether a payment method is required, and re-validate the payment fields so
+  // stale errors clear when the sale is switched to unpaid (Pending payment).
+  const handlePaidChange = (next: boolean) => {
+    setIsPaid(next);
+    setValue('paid', next, { shouldValidate: true });
+    void trigger(['paymentMethod', 'paymentDetails']);
+  };
+
+  // ── Draft capture (new sales only) ────────────────────────────────────────────
+  // Persist RHF field changes to the draft store as the user types, so a
+  // half-filled new sale survives closing the modal or navigating away.
+  useEffect(() => {
+    if (!isNew) return;
+    const sub = watch((values) => patchSaleDraft(values as SaleDraft));
+    return () => sub.unsubscribe();
+  }, [isNew, watch, patchSaleDraft]);
+
+  // Persist the non-RHF pieces (line items + their surcharge/quantity maps, and
+  // the paid/received toggles) whenever any of them change.
+  useEffect(() => {
+    if (!isNew) return;
+    patchSaleDraft({ items, surchargeOverridden, quantityEntered, isPaid, isDelivered });
+  }, [isNew, items, surchargeOverridden, quantityEntered, isPaid, isDelivered, patchSaleDraft]);
+
+  // ── Late-binding invoice number display ─────────────────────────────────────
+  // The system owns the invoice number (not typed): a DRAFT- id while pending,
+  // and the official INV- number the moment the sale is finalized (paid).
+  const invoiceDisplay = (() => {
+    const existing = sale?.invoiceNumber ?? '';
+    if (isOfficialInvoice(existing)) {
+      return { value: existing, official: true, hint: 'Official invoice number — finalized and permanent.' };
+    }
+    if (isPaid) {
+      // New sale being saved as paid, or a draft about to be finalized on save.
+      return existing
+        ? { value: existing, official: false, hint: 'An official invoice number will be assigned when you save.' }
+        : { value: 'Assigned on save', official: false, hint: 'An official invoice number will be assigned when you save.' };
+    }
+    // Pending (unpaid): show the draft id (or that one will be created on save).
+    return existing
+      ? { value: existing, official: false, hint: 'Temporary draft — the official number is assigned when the sale is marked paid.' }
+      : { value: 'Draft (assigned on save)', official: false, hint: 'A temporary draft number is used until the sale is marked paid.' };
+  })();
 
   // ── Manual-entry customer matching ──────────────────────────────────────────
   const { matches: nameMatches, exact: exactMatch } = useEntityMatch(
@@ -263,6 +510,8 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
     setValue('customerPhone', c.phone ?? '');
     setValue('customerFbMessenger', c.fbMessengerName ?? '');
     setValue('customerAddress', c.address ?? '');
+    // Adopt the customer's country so the sale currency follows them.
+    setValue('country', countryOf(c.location), { shouldValidate: true });
   };
 
   /**
@@ -292,6 +541,10 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
       fbMessengerName: watch('customerFbMessenger'),
       email: '',
       address: watch('customerAddress'),
+      // Capture the country so a new international customer is recorded as such
+      // (matches the sale-submit path); province/municipality stay blank until
+      // the customer is edited in the Customers page.
+      location: { country: watch('country') || PHILIPPINES, province: '', municipality: '' },
       notes: '',
     });
     setValue('customerId', created.id);
@@ -315,12 +568,45 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
   };
 
   // ── Bulk product selection (checklist) ──────────────────────────────────────
+  /**
+   * Default unit price for a product in the sale's currency (USD for
+   * international). Prefers the product's selling price; when that isn't set
+   * yet, falls back to its unit cost so a product with only a cost still opens
+   * the line pre-filled instead of at 0.
+   */
+  const defaultUnitPrice = (product: Product): number => {
+    const sellingPrice = currency === 'USD' ? product.sellingPriceUSD : product.sellingPricePHP;
+    if (sellingPrice > 0) return sellingPrice;
+    const unitCost = currency === 'USD' ? product.costUSD : product.costPHP;
+    return unitCost > 0 ? unitCost : 0;
+  };
+
+  /**
+   * Whether adding/selling this product is blocked because it's out of stock.
+   * A product is out of stock when its inventory row exists with an ending
+   * quantity of 0 (or less). Products with no inventory row yet return
+   * `undefined` from `availableStockOf` and are not blocked (the row is created
+   * on receipt). Editing an already-received sale is exempt — its quantity is
+   * already deducted from stock, so re-checking would wrongly block it.
+   */
+  const isOutOfStock = (product: Product | undefined): boolean => {
+    const alreadyAccounted = !!sale && !!sale.delivered;
+    if (alreadyAccounted) return false;
+    const stock = availableStockOf(product);
+    return stock !== undefined && stock <= 0;
+  };
+
   /** Add a product as a new line pre-filled from the catalog (qty 1, default price). */
   const addProductLine = (product: Product) => {
+    // Block selling a product that's out of stock — nothing to sell.
+    if (isOutOfStock(product)) {
+      toast.error(`No stock for "${productLabel(product)}" — add stock via Expenses or Propagation first.`);
+      return;
+    }
     const key = generateId();
     setItems((prev) => {
       const quantity = 1;
-      const unitPrice = product.sellingPricePHP;
+      const unitPrice = defaultUnitPrice(product);
       return [
         ...prev,
         {
@@ -366,6 +652,11 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
     else addProductLine(product);
   };
 
+  // Every checklist entry is backed by a real product, so toggling/checking is a
+  // straight product operation.
+  const toggleEntry = (entry: PickerEntry) => toggleProduct(entry.product);
+  const isEntryChecked = (entry: PickerEntry): boolean => selectedProductIds.has(entry.product.id);
+
   const updateItem = (key: string, field: keyof SaleItem, value: string | number) => {
     // Reject picking a product-variety that's already on another line. Each
     // product should appear once — the user adjusts that line's quantity instead.
@@ -408,7 +699,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
         clampError =
           stock > 0
             ? `Only ${stock} in stock — quantity set to ${stock}.`
-            : 'None in stock — add stock via Expenses or the Cuttings Store first.';
+            : 'None in stock — add stock via Expenses or Propagation first.';
         toast.error(clampError);
       }
     }
@@ -422,7 +713,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
           const product = products.find((p) => p.id === value);
           if (product) {
             updated.productName = productLabel(product);
-            updated.unitPrice = product.sellingPricePHP;
+            updated.unitPrice = defaultUnitPrice(product);
           }
           // A fresh product resets any manual surcharge override; the aggregate
           // effect below will re-apply the standard surcharge if warranted.
@@ -470,10 +761,11 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
         const product = products.find((p) => p.id === i.productId);
         const stock = availableStockOf(product);
         const alreadyAccounted = !!sale && !!sale.delivered;
-        if (stock !== undefined && !alreadyAccounted && i.quantity > stock) {
-          errs[i._key] = stock > 0
-            ? `Only ${stock} in stock (you entered ${i.quantity}).`
-            : 'None in stock — add stock via Expenses or the Cuttings Store first.';
+        if (stock !== undefined && !alreadyAccounted && stock <= 0) {
+          // No ending quantity — this product can't be sold at all.
+          errs[i._key] = 'No stock for this product — add stock via Expenses or Propagation first.';
+        } else if (stock !== undefined && !alreadyAccounted && i.quantity > stock) {
+          errs[i._key] = `Only ${stock} in stock (you entered ${i.quantity}).`;
         }
       }
       if (i.productId) seenProductIds.add(i.productId);
@@ -492,12 +784,16 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
       setValue('customerPhone', '');
       setValue('customerFbMessenger', '');
       setValue('customerAddress', '');
+      // Manual entry: default to local; the user can pick a country below.
+      setValue('country', PHILIPPINES, { shouldValidate: true });
     } else {
       const customer = customers.find((c) => c.id === val);
       setValue('customerName', customer?.customerName ?? '');
       setValue('customerPhone', customer?.phone ?? '');
       setValue('customerFbMessenger', customer?.fbMessengerName ?? '');
       setValue('customerAddress', customer?.address ?? '');
+      // The sale currency follows the customer's country.
+      setValue('country', countryOf(customer?.location), { shouldValidate: true });
     }
   };
 
@@ -520,11 +816,37 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
   };
 
   const doSave = (data: FormValues) => {
+    // ── Delivery gate: packed stock must cover the order ────────────────────────
+    // A cutting order can only be flagged "Received by Customer" once its
+    // cuttings are PACKED (the inventory Available-for-Sale pool). The sale may
+    // have gone through against on-hand stock that still includes bare, unpacked
+    // cuttings — so block the delivered flag until the packed quantity covers the
+    // sale quantity, telling the user exactly how many of each variety to pack.
+    // (Non-cutting lines have no packing step and never block.)
+    if (hasStockItems && isDelivered) {
+      const { products: liveProductsForGate } = useProductStore.getState();
+      const readiness = computeSaleDeliveryReadiness(
+        { items: items.map(({ _key: _drop, ...i }) => i), delivered: sale?.delivered },
+        (id) => liveProductsForGate.find((p) => p.id === id),
+        useInventoryStore.getState().items,
+      );
+      if (!readiness.canDeliver) {
+        const detail = readiness.shortfalls
+          .map((s) => `${s.toPack} × ${s.variety}`)
+          .join(', ');
+        toast.error(
+          `Can't mark as received yet — still needs packing: ${detail}. Pack these on the Inventory page first.`,
+          { duration: 7000 },
+        );
+        return;
+      }
+    }
+
     // ── Price learning ────────────────────────────────────────────────────────
-    // For any product that has NO selling price set yet (₱0), save the unit price
-    // entered here back to the product record so it auto-fills next time.
-    // Products that already have a price are left untouched — the entered price is
-    // treated as a per-sale override (e.g. a discount for a specific customer).
+    // For any product with NO selling price set yet in this sale's currency,
+    // save the entered unit price back so it auto-fills next time. USD sales learn
+    // sellingPriceUSD; PHP sales learn sellingPricePHP. Products that already have
+    // a price are left untouched (the entered price is a per-sale override).
     const learnedProducts: string[] = [];
     // Read the live store state (not the render-time snapshot) so the lookup and
     // write always target the current product record.
@@ -532,8 +854,13 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
     items.forEach((item) => {
       if (!item.productId) return;
       const product = liveProducts.find((p) => p.id === item.productId);
-      if (product && product.sellingPricePHP === 0 && item.unitPrice > 0) {
-        liveUpdateProduct(product.id, { sellingPricePHP: item.unitPrice });
+      if (!product || item.unitPrice <= 0) return;
+      const currentPrice = currency === 'USD' ? product.sellingPriceUSD : product.sellingPricePHP;
+      if (currentPrice === 0) {
+        liveUpdateProduct(
+          product.id,
+          currency === 'USD' ? { sellingPriceUSD: item.unitPrice } : { sellingPricePHP: item.unitPrice },
+        );
         learnedProducts.push(categoryLabel(product.category, product.subcategory));
       }
     });
@@ -560,6 +887,8 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
           fbMessengerName: data.customerFbMessenger,
           email: '',
           address: data.customerAddress,
+          // Capture the country so a new international customer is recorded as such.
+          location: { country: data.country || PHILIPPINES, province: '', municipality: '' },
           notes: '',
         });
         resolvedCustomerId = created.id;
@@ -578,9 +907,18 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
       invoiceNumber: data.invoiceNumber,
       customerId: resolvedCustomerId,
       customerName: data.customerName,
+      // Snapshot the contact info on the sale so it survives edits regardless of
+      // whether the customer was persisted.
+      customerPhone: data.customerPhone,
+      customerFbMessenger: data.customerFbMessenger,
+      customerAddress: data.customerAddress,
       saleType: data.saleType,
-      paymentMethod: data.paymentMethod,
-      paymentDetails: data.paymentDetails,
+      // Local (PH) sales are PHP; international are USD. Never mixed/converted.
+      currency,
+      // An unpaid (Pending) sale carries no payment method/details — they're
+      // captured only once it's marked paid.
+      paymentMethod: isPaid ? data.paymentMethod : '',
+      paymentDetails: isPaid ? data.paymentDetails : '',
       paid: isPaid,
       // Only inventory-tracked sales carry a received flag; other sales (Drink /
       // Other) never move inventory, so they are never "received".
@@ -596,11 +934,11 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
 
     if (sale) {
       updateSale(sale.id, payload as Partial<Sale>);
-      toast.success('Sale updated');
+      toast.success(toastSuccess(ENTITY.sale, 'updated'));
     } else {
       const created = addSale(payload as Parameters<typeof addSale>[0]);
       saleId = created.id;
-      toast.success('Sale recorded');
+      toast.success(toastSuccess(ENTITY.sale, 'created'));
     }
 
     // ── Cuttings Store cascade ────────────────────────────────────────────────
@@ -625,7 +963,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
           cuttingType: CUTTING_TYPE_GRAFTED,
         });
       });
-      toast('Logged to Cuttings Store', { icon: '🌱', duration: 3000 });
+      toast('Logged to Propagation', { icon: '🌱', duration: 3000 });
     }
 
     // ── Commission bucket sync ────────────────────────────────────────────────
@@ -658,6 +996,37 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
       );
     }
 
+    // ── Needs-packing notice ──────────────────────────────────────────────────
+    // A cutting sale is allowed as long as the quantity is within on-hand stock
+    // (endingQty), but on-hand stock includes bare cuttings that still need
+    // packing. Whenever a line's quantity exceeds the ready (packed /
+    // availableForSale) portion, that shortfall has to be packed before the order
+    // can be handed over. The sale still goes through — we just flag what needs
+    // packing so it isn't forgotten. Skipped when editing an already-received
+    // sale (its stock already moved, so re-checking would mislead).
+    const alreadyReceived = !!sale && !!sale.delivered;
+    if (!alreadyReceived) {
+      const packNotices: string[] = [];
+      items.forEach((item) => {
+        if (!item.productId || item.quantity <= 0) return;
+        const product = liveProducts.find((p) => p.id === item.productId);
+        const ready = readyStockOf(product);
+        if (ready === undefined) return; // non-cutting or no inventory row
+        const shortfall = item.quantity - ready;
+        if (shortfall > 0 && product) {
+          packNotices.push(`${shortfall} × ${categoryLabel(product.category, product.subcategory)}`);
+        }
+      });
+      if (packNotices.length > 0) {
+        toast(
+          `Needs packing before delivery: ${packNotices.join(', ')}. Pack it on the Inventory page.`,
+          { icon: '📦', duration: 6000 },
+        );
+      }
+    }
+
+    // Successful create → the in-progress draft is now saved; discard it.
+    if (!sale) clearSaleDraft();
     onClose();
   };
 
@@ -665,8 +1034,18 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
     <>
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
       <div className="grid grid-cols-2 gap-4">
-        <InputField label="Date" type="date" required error={errors.date?.message} {...register('date')} />
-        <InputField label="Invoice #" {...register('invoiceNumber')} placeholder="Auto or manual" />
+        <InputField label={FIELD.date.label} type="date" required error={errors.date?.message} {...register('date')} />
+        {/* Late-binding invoice number — assigned by the system, not typed:
+            a temporary DRAFT while pending, and the official sequential number
+            the moment the sale is marked paid. */}
+        <div>
+          <DisplayField
+            label={FIELD.invoice.label}
+            value={invoiceDisplay.value}
+            highlight={invoiceDisplay.official}
+          />
+          <p className="mt-1 text-xs text-gray-400">{invoiceDisplay.hint}</p>
+        </div>
       </div>
 
       {/* Customer */}
@@ -688,18 +1067,35 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
           <option value={MANUAL_ENTRY}>+ Add new customer…</option>
         </select>
 
+        {/* Currency indicator for a linked international customer (manual entry
+            shows its own country picker below). */}
+        {isInternational && !isManualEntry && (
+          <p className="mt-1 text-xs text-berry-700">
+            International customer ({saleCountry}) — this sale is recorded in USD ($).
+          </p>
+        )}
+
         {/* New-customer entry: identity + optional contact, with a duplicate check
             and an explicit "Save to Customers" action. No type here — a customer
             has no type; the sale does (see the Sale Type field below). */}
         {isManualEntry && (
           <div className="mt-2 space-y-2 rounded-lg border border-gray-100 bg-gray-50 p-3">
             <InputField
-              label="Customer Name"
+              label={FIELD.customerName.label}
               required
               autoFocus
               error={errors.customerName?.message}
               {...register('customerName')}
-              placeholder="Type customer name…"
+              placeholder={FIELD.customerName.placeholder}
+            />
+
+            {/* Country — Philippines (local, PHP) or another country (international, USD). */}
+            <SelectField
+              label="Country"
+              options={COUNTRY_OPTIONS}
+              value={saleCountry || PHILIPPINES}
+              onChange={(e) => setValue('country', e.target.value, { shouldValidate: true, shouldDirty: true })}
+              hint={isInternational ? 'International customer — this sale is recorded in USD ($).' : 'Local customer — this sale is recorded in PHP (₱).'}
             />
 
             {/* Notify when the typed name looks like an existing customer */}
@@ -798,7 +1194,118 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
 
         {/* Bulk product checklist — check several products to add them all as lines at once */}
         {productPickerOpen && (
-          <div className="rounded-lg border border-gray-200 p-3 mb-2 space-y-2">
+          <div className="rounded-lg border border-gray-200 p-3 mb-2 space-y-3">
+            {/* Filter dropdowns list only categories/varieties that have a real
+                product in the store. Create-new routes to the New Product panel. */}
+            <div className="flex items-end gap-2">
+              <div className="grid flex-1 grid-cols-2 gap-3">
+                <CreatableSelect
+                  label="Category"
+                  options={categoryOptions}
+                  placeholder={categoryOptions.length ? 'All categories' : 'No categories yet'}
+                  value={activeCategory}
+                  onChange={(v) => { setActiveCategory(v); setActiveSubcategory(''); }}
+                  onCreate={(v) => { setNewCategory(v.trim()); setNewSubcategory(''); setNewUnit(''); setCreateError(''); setShowCreateProduct(true); }}
+                  createLabel="+ New product…"
+                  newFieldLabel="New Category"
+                  newFieldPlaceholder="e.g. Fruit"
+                  hint="Optional — narrows the products below."
+                />
+                <CreatableSelect
+                  label="Subcategory"
+                  options={subcategoryOptions}
+                  placeholder={
+                    activeCategory
+                      ? (subcategoryOptions.length ? 'All subcategories' : 'No products in this category')
+                      : (subcategoryOptions.length ? 'All subcategories' : 'Pick a category first')
+                  }
+                  value={activeSubcategory}
+                  onChange={(v) => setActiveSubcategory(v)}
+                  onCreate={handleCreateSubcategory}
+                  disabled={!activeCategory}
+                  createLabel="+ New product…"
+                  newFieldLabel="New Subcategory"
+                  newFieldPlaceholder="e.g. Thai White"
+                  hint={activeCategory ? 'Optional — scoped to the selected category.' : 'Select a category to enable.'}
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                icon={<PackagePlus className="w-4 h-4" />}
+                onClick={() => {
+                  setNewCategory(activeCategory);
+                  setNewSubcategory('');
+                  setNewUnit('');
+                  setCreateError('');
+                  setShowCreateProduct((s) => !s);
+                }}
+              >
+                New product
+              </Button>
+            </div>
+
+            {/* Inline create-product panel — a new variety needs a default unit,
+                captured here (mirrors the Expense Form's product picker). */}
+            {showCreateProduct && (
+              <div className="rounded-lg border border-primary-100 bg-primary-50 p-3 space-y-3">
+                <p className="text-xs font-medium text-primary-700">
+                  New product — identified by category + subcategory. Saved to Products (set the selling price on the line, or later in Products).
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <CreatableSelect
+                    label="Category"
+                    required
+                    options={categoryOptions}
+                    placeholder="Select category…"
+                    value={newCategory}
+                    onChange={(v) => { setNewCategory(v); setNewSubcategory(''); setCreateError(''); }}
+                    onCreate={(v) => { const c = v.trim(); addEntry(c, ''); syncTaxonomy(c, ''); setNewCategory(c); setNewSubcategory(''); setCreateError(''); }}
+                    createLabel="+ Add new category…"
+                    newFieldLabel="New Category"
+                    newFieldPlaceholder="e.g. Fruit"
+                  />
+                  <CreatableSelect
+                    label="Subcategory"
+                    required
+                    options={newSubcategoryOptions}
+                    placeholder={newCategory ? (newSubcategoryOptions.length ? 'Select or add…' : 'Add a subcategory…') : 'Pick a category first'}
+                    value={newSubcategory}
+                    onChange={(v) => { setNewSubcategory(v); setCreateError(''); }}
+                    onCreate={(v) => { setNewSubcategory(v.trim()); setCreateError(''); }}
+                    disabled={!newCategory}
+                    createLabel="+ Add new subcategory…"
+                    newFieldLabel="New Subcategory"
+                    newFieldPlaceholder="e.g. Thai White"
+                  />
+                </div>
+                <CreatableSelect
+                  label="Unit"
+                  options={unitOptions}
+                  placeholder="Select or add…"
+                  value={newUnit}
+                  onChange={(v) => { setNewUnit(v); setCreateError(''); }}
+                  onCreate={addUnit}
+                  createLabel="+ Add new unit…"
+                  newFieldLabel="New Unit"
+                  newFieldPlaceholder="e.g. Piece"
+                  hint={
+                    newCategory && newSubcategory
+                      ? `This will be saved as the default unit for ${categoryLabel(newCategory, newSubcategory)}.`
+                      : 'This will be saved as the default unit for the new product.'
+                  }
+                />
+                {createError && <p className="text-xs text-red-500">{createError}</p>}
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={resetCreateProduct}>Cancel</Button>
+                  <Button type="button" size="sm" icon={<Plus className="w-4 h-4" />} onClick={handleCreateProduct}>
+                    Add product
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <input
               type="text"
               value={productSearch}
@@ -806,33 +1313,52 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
               placeholder="Search products…"
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
             />
-            {pickerProducts.length === 0 ? (
+            {pickerEntries.length === 0 ? (
               <p className="text-xs text-gray-400">
-                {products.length === 0 ? 'No products yet. Add products first.' : 'No products match your search.'}
+                {products.length === 0
+                  ? 'No products yet. Add products first.'
+                  : (activeCategory || activeSubcategory || productSearch.trim())
+                    ? 'No products match the current filters. Use "New product" to add one.'
+                    : 'No products match your search.'}
               </p>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-56 overflow-y-auto scrollbar-thin">
-                {pickerProducts.map(({ product, label }) => (
+                {pickerEntries.map((entry) => {
+                  // Out-of-stock products can't be sold — disable checking them
+                  // (unless already on this sale, so an existing line stays
+                  // uncheckable-to-removable).
+                  const outOfStock = isOutOfStock(entry.product) && !isEntryChecked(entry);
+                  return (
                   <label
-                    key={product.id}
-                    className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-50 cursor-pointer text-sm"
+                    key={entry.key}
+                    className={[
+                      'flex items-center gap-2 px-2 py-1.5 rounded-md text-sm',
+                      outOfStock ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50 cursor-pointer',
+                    ].join(' ')}
+                    title={outOfStock ? 'No stock — add stock via Expenses or Propagation first.' : undefined}
                   >
                     <input
                       type="checkbox"
-                      checked={selectedProductIds.has(product.id)}
-                      onChange={() => toggleProduct(product)}
-                      className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                      checked={isEntryChecked(entry)}
+                      disabled={outOfStock}
+                      onChange={() => toggleEntry(entry)}
+                      className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 disabled:cursor-not-allowed"
                     />
-                    <span className="flex-1 truncate text-gray-700">{label}</span>
-                    {product.sellingPricePHP > 0 && (
-                      <span className="text-xs text-gray-400">{formatPHP(product.sellingPricePHP)}</span>
+                    <span className="flex-1 truncate text-gray-700">{entry.label}</span>
+                    {outOfStock ? (
+                      <span className="text-xs font-medium text-red-500">No stock</span>
+                    ) : (
+                      defaultUnitPrice(entry.product) > 0 && (
+                        <span className="text-xs text-gray-400">{money(defaultUnitPrice(entry.product))}</span>
+                      )
                     )}
                   </label>
-                ))}
+                  );
+                })}
               </div>
             )}
             <p className="text-xs text-gray-400">
-              Check products to add them as lines (quantity defaults to 1 — adjust below). Uncheck to remove.
+              Filter by category/subcategory or search, then check products to add them as lines (quantity defaults to 1 — adjust below). Uncheck to remove.
             </p>
           </div>
         )}
@@ -878,8 +1404,17 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
                     ].join(' ')}
                   />
                 </div>
+                <div className="col-span-1 min-w-0">
+                  <label className="text-xs text-gray-500 mb-0.5 block">Unit</label>
+                  <div
+                    className="px-2 py-1.5 text-sm text-gray-600 bg-white border border-gray-200 rounded truncate"
+                    title={product?.unit || 'No unit set'}
+                  >
+                    {product?.unit || '—'}
+                  </div>
+                </div>
                 <div className="col-span-2">
-                  <label className="text-xs text-gray-500 mb-0.5 block">Unit Price (₱) *</label>
+                  <label className="text-xs text-gray-500 mb-0.5 block">{priceLabel} *</label>
                   <input
                     type="number"
                     min="0"
@@ -894,7 +1429,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
                 </div>
                 <div className="col-span-2">
                   <label className="text-xs text-gray-500 mb-0.5 block" title="Per-unit surcharge (e.g. small-order cuttings fee)">
-                    Surcharge (₱)
+                    {currency === 'USD' ? 'Surcharge ($)' : 'Surcharge (₱)'}
                   </label>
                   <input
                     type="number"
@@ -910,10 +1445,10 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
                     ].join(' ')}
                   />
                 </div>
-                <div className="col-span-2">
+                <div className="col-span-1">
                   <label className="text-xs text-gray-500 mb-0.5 block">Total</label>
-                  <div className="px-2 py-1.5 text-sm bg-white border border-gray-200 rounded font-medium text-leaf-700">
-                    {formatPHP(lineTotal(item))}
+                  <div className="px-2 py-1.5 text-sm bg-white border border-gray-200 rounded font-medium text-leaf-700 truncate" title={money(lineTotal(item))}>
+                    {money(lineTotal(item))}
                   </div>
                 </div>
                 <div className="col-span-1 flex justify-center">
@@ -935,17 +1470,19 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
               {!itemErrors[item._key] && (() => {
                 const product = products.find((p) => p.id === item.productId);
                 if (!product) return null;
-                if (product.sellingPricePHP === 0 && item.unitPrice > 0) {
+                // Compare against the default price in THIS sale's currency.
+                const defaultPrice = currency === 'USD' ? product.sellingPriceUSD : product.sellingPricePHP;
+                if (defaultPrice === 0 && item.unitPrice > 0) {
                   return (
                     <p className="text-xs text-primary-600 mt-1 ml-2">
-                      This price will be saved as the default for "{categoryLabel(product.category, product.subcategory)}".
+                      This price will be saved as the default {currency === 'USD' ? '$' : '₱'} price for "{categoryLabel(product.category, product.subcategory)}".
                     </p>
                   );
                 }
-                if (product.sellingPricePHP > 0 && item.unitPrice !== product.sellingPricePHP) {
+                if (defaultPrice > 0 && item.unitPrice !== defaultPrice) {
                   return (
                     <p className="text-xs text-gold-600 mt-1 ml-2">
-                      Custom price for this sale (default is {formatPHP(product.sellingPricePHP)} — not changed).
+                      Custom price for this sale (default is {money(defaultPrice)} — not changed).
                     </p>
                   );
                 }
@@ -974,22 +1511,38 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
         })()}
         {items.length > 0 && (
           <div className="flex justify-end mt-2 pr-10">
-            <DisplayField label="Subtotal" value={formatPHP(subtotal)} highlight />
+            <DisplayField label="Subtotal" value={money(subtotal)} highlight />
           </div>
         )}
       </div>
 
-      {/* Payment */}
-      <div className="grid grid-cols-2 gap-4">
-        <SelectField label="Payment Method" required options={PAYMENT_OPTIONS} error={errors.paymentMethod?.message} {...register('paymentMethod')} />
-        <InputField
-          label="Payment Details"
-          required={paymentDetailsRequired}
-          error={errors.paymentDetails?.message}
-          {...register('paymentDetails')}
-          placeholder={paymentDetailsRequired ? 'e.g. BPI account / ref #' : 'Optional'}
-          hint={paymentDetailsRequired ? 'Required for this payment method' : undefined}
+      {/* Payment — a paid sale captures method + details; an unpaid sale is
+          "Pending payment" and flows to Outstanding until it's settled. */}
+      <div>
+        <CheckboxField
+          label="Paid"
+          checked={isPaid}
+          onChange={handlePaidChange}
+          hint={isPaid ? undefined : 'Leave unchecked to record as Pending payment (shows under Outstanding).'}
         />
+        {isPaid ? (
+          <div className="mt-3 grid grid-cols-2 gap-4">
+            <SelectField label={FIELD.paymentMethod.label} required options={PAYMENT_OPTIONS} error={errors.paymentMethod?.message} {...register('paymentMethod')} />
+            <InputField
+              label={FIELD.paymentDetails.label}
+              required={paymentDetailsRequired}
+              error={errors.paymentDetails?.message}
+              {...register('paymentDetails')}
+              placeholder={paymentDetailsRequired ? 'e.g. BPI account / ref #' : 'Optional'}
+              hint={paymentDetailsRequired ? 'Required for this payment method' : undefined}
+            />
+          </div>
+        ) : (
+          <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-gold-200 bg-gold-50 px-3 py-2 text-sm text-gold-800">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            <span>Pending payment — this sale will show under Outstanding until it's marked paid.</span>
+          </div>
+        )}
       </div>
 
       {/* Sold By — salesperson for commission tracking (optional) */}
@@ -1009,14 +1562,12 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
             const commission = subtotal * (sp.commission / 100);
             return (
               <p className="text-xs text-primary-600 mt-1">
-                {sp.name} earns {formatPHP(commission)} ({sp.commission}% of {formatPHP(subtotal)}) — added to their commission bucket for {watch('date')}.
+                {sp.name} earns {money(commission)} ({sp.commission}% of {money(subtotal)}) — added to their commission bucket for {watch('date')}.
               </p>
             );
           })()}
         </div>
       )}
-
-      <CheckboxField label="Paid" checked={isPaid} onChange={setIsPaid} />
 
       {/* Fulfillment — shown for any sale with a resolvable product (all sold
           products are inventory-tracked). Marking received deducts the quantity
@@ -1030,7 +1581,7 @@ export function SaleForm({ sale, onClose }: SaleFormProps) {
           hint="Marks the items as received by the customer and deducts them from inventory stock."
         />
       )}
-      <TextareaField label="Notes" {...register('notes')} rows={2} />
+      <TextareaField label={FIELD.notes.label} {...register('notes')} rows={2} />
 
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" type="button" onClick={onClose}>Cancel</Button>

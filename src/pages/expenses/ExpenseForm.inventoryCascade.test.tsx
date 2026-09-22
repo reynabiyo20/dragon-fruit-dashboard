@@ -26,7 +26,7 @@ function invRow(category: string, subcategory: string): InventoryItem {
 beforeEach(() => {
   useVendorStore.setState({
     vendors: [
-      { id: 'v1', vendor: 'Acme', contact: '', phone: '', supplies: [{ category: 'Fertilizer', subcategory: 'Magnesium' }], notes: '', createdAt: '', updatedAt: '' },
+      { id: 'v1', vendor: 'Acme', contact: '', phone: '', location: { province: '', municipality: '' }, supplies: [{ category: 'Fertilizer', subcategory: 'Magnesium' }], notes: '', createdAt: '', updatedAt: '' },
     ],
     _seeded: 999,
   });

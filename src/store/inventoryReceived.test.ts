@@ -158,7 +158,7 @@ describe('inventory received-driven sold for any sold product', () => {
     expect(useInventoryStore.getState().findByCategorySub('Other', 'Jacket')).toBeUndefined();
   });
 
-  it('deleting a received Fruit sale returns sold', () => {
+  it('deleting a Paid + Received Fruit sale removes it and returns its stock', () => {
     const productId = seedRow(FRUIT_PRODUCT_TYPE, 'Palora Yellow', 88);
     const sale = useSaleStore.getState().addSale({
       date: '2026-01-01', invoiceNumber: '', customerId: '', customerName: 'X', saleType: '',
@@ -167,7 +167,28 @@ describe('inventory received-driven sold for any sold product', () => {
       soldByEmployeeId: '', soldByName: '', notes: '',
     });
     expect(row(FRUIT_PRODUCT_TYPE, 'Palora Yellow').sold).toBe(10);
+    // A completed (Paid + Received) sale is deletable in one step. deleteSale
+    // reverses the delivery effect, returning `sold` to 0, and removes the sale.
     useSaleStore.getState().deleteSale(sale.id);
+    expect(useSaleStore.getState().getSale(sale.id)).toBeUndefined();
+    expect(row(FRUIT_PRODUCT_TYPE, 'Palora Yellow').sold).toBe(0);
+  });
+
+  it('un-receiving then deleting a sale returns sold to inventory', () => {
+    const productId = seedRow(FRUIT_PRODUCT_TYPE, 'Palora Yellow', 88);
+    const sale = useSaleStore.getState().addSale({
+      date: '2026-01-01', invoiceNumber: '', customerId: '', customerName: 'X', saleType: '',
+      items: [{ productId, productName: 'Fruit – Palora Yellow', quantity: 10, unitPrice: 100, surcharge: 0, total: 1000 }],
+      paymentMethod: 'Cash', paymentDetails: '', paid: true, delivered: true,
+      soldByEmployeeId: '', soldByName: '', notes: '',
+    });
+    expect(row(FRUIT_PRODUCT_TYPE, 'Palora Yellow').sold).toBe(10);
+    // Editing the status to Pending reverses the delivery inventory at the toggle.
+    useSaleStore.getState().updateSale(sale.id, { delivered: false });
+    expect(row(FRUIT_PRODUCT_TYPE, 'Palora Yellow').sold).toBe(0);
+    // Now the (still Paid but Pending) sale can be deleted; no further movement.
+    useSaleStore.getState().deleteSale(sale.id);
+    expect(useSaleStore.getState().getSale(sale.id)).toBeUndefined();
     expect(row(FRUIT_PRODUCT_TYPE, 'Palora Yellow').sold).toBe(0);
   });
 });

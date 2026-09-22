@@ -5,6 +5,9 @@ import { generateId, now } from '../utils/id';
 import { sumWorkedDays, payoutDate } from '../utils/payroll';
 import { useTimesheetStore } from './timesheetStore';
 
+/** Bucket for payroll entries missing a labor type / accounting classification. */
+const UNCLASSIFIED_LABEL = 'Unclassified';
+
 /**
  * An "empty" payroll line: no days worked and no commission/bonus/deductions —
  * i.e. nothing owed and nothing to adjust (net pay of 0). These add only noise,
@@ -78,6 +81,18 @@ interface PayrollState {
   unpaidForEmployee: (employeeId: string) => PayrollEntry[];
   totalPayroll: () => number;
   totalByEmployee: () => Record<string, number>;
+  /**
+   * Net pay grouped by labor type (Direct / Indirect / Selling / Administrative),
+   * snapshotted on each entry at Run-Payroll time. Entries without one fall into
+   * `Unclassified`.
+   */
+  totalByLaborType: () => Record<string, number>;
+  /**
+   * Net pay grouped by accounting classification (COGS vs OpEx variants), so
+   * payroll cost can be split the same way expenses are. Entries without one
+   * fall into `Unclassified`.
+   */
+  totalByAccountingClassification: () => Record<string, number>;
 }
 
 /** Build a fully-computed PayrollEntry from input (shared by add + addBatch). */
@@ -178,6 +193,20 @@ export const usePayrollStore = create<PayrollState>()(
       totalByEmployee: () =>
         get().entries.reduce<Record<string, number>>((acc, e) => {
           acc[e.employeeName] = (acc[e.employeeName] ?? 0) + e.netPay;
+          return acc;
+        }, {}),
+
+      totalByLaborType: () =>
+        get().entries.reduce<Record<string, number>>((acc, e) => {
+          const label = (e.laborType ?? '').trim() || UNCLASSIFIED_LABEL;
+          acc[label] = (acc[label] ?? 0) + e.netPay;
+          return acc;
+        }, {}),
+
+      totalByAccountingClassification: () =>
+        get().entries.reduce<Record<string, number>>((acc, e) => {
+          const label = (e.accountingClassification ?? '').trim() || UNCLASSIFIED_LABEL;
+          acc[label] = (acc[label] ?? 0) + e.netPay;
           return acc;
         }, {}),
     }),

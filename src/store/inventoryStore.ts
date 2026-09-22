@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { InventoryItem } from '../types';
 import { generateId, now } from '../utils/id';
+import { isServiceCategory, CUTTINGS_PRODUCT_TYPE } from '../constants';
 
 /**
  * Auto-calculate ending (on-hand) quantity.
@@ -13,13 +14,26 @@ import { generateId, now } from '../utils/id';
  *     packing before they can be sold.
  * For non-cuttings rows both are 0, so the formula reduces to the classic
  * beginning + purchased − used − sold.
+ *
+ * Cuttings caveat: for cuttings the on-hand quantity is simply the sum of the
+ * physical pools — endingQty = packed + needsPacking (+ produced + harvested).
+ * Both a delivered cutting sale AND recorded usage draw physical stock OUT of
+ * those pools directly (sale → −packed via applyReceivedToInventory; usage →
+ * −needsPacking then −packed via adjustUsedCuttings), while still incrementing
+ * the `sold` / `used` counters for reporting. Because each departure is already
+ * captured by the pool movement, subtracting `sold` or `used` again would
+ * double-count it, so BOTH terms are dropped for cuttings rows. `sold` / `used`
+ * remain accurate lifetime counts for display.
  */
 function calcEnding(
-  item: Pick<InventoryItem, 'beginningQty' | 'purchased' | 'used' | 'sold' | 'packed' | 'needsPacking' | 'produced'>,
+  item: Pick<InventoryItem, 'category' | 'beginningQty' | 'purchased' | 'used' | 'sold' | 'packed' | 'needsPacking' | 'produced' | 'harvested'>,
 ): number {
+  const isCuttings = norm(item.category) === norm(CUTTINGS_PRODUCT_TYPE);
+  const soldTerm = isCuttings ? 0 : item.sold;
+  const usedTerm = isCuttings ? 0 : item.used;
   return (
-    item.beginningQty + item.purchased - item.used - item.sold +
-    (item.packed ?? 0) + (item.needsPacking ?? 0) + (item.produced ?? 0)
+    item.beginningQty + item.purchased - usedTerm - soldTerm +
+    (item.packed ?? 0) + (item.needsPacking ?? 0) + (item.produced ?? 0) + (item.harvested ?? 0)
   );
 }
 
@@ -37,7 +51,7 @@ function norm(value: string): string {
 function dedupeItems(items: InventoryItem[]): InventoryItem[] {
   const byKey = new Map<string, InventoryItem>();
   for (const raw of items) {
-    const item = { packed: 0, needsPacking: 0, breedingStock: 0, availableForSale: 0, produced: 0, ...raw };
+    const item = { packed: 0, needsPacking: 0, breedingStock: 0, availableForSale: 0, produced: 0, harvested: 0, ...raw };
     const key = `${norm(item.category)}||${norm(item.subcategory)}`;
     const existing = byKey.get(key);
     if (!existing) {
@@ -53,6 +67,7 @@ function dedupeItems(items: InventoryItem[]): InventoryItem[] {
     existing.breedingStock = (existing.breedingStock ?? 0) + (item.breedingStock ?? 0);
     existing.availableForSale = (existing.availableForSale ?? 0) + (item.availableForSale ?? 0);
     existing.produced = (existing.produced ?? 0) + (item.produced ?? 0);
+    existing.harvested = (existing.harvested ?? 0) + (item.harvested ?? 0);
     if (!existing.unit && item.unit) existing.unit = item.unit;
     if (existing.unitCost === 0 && item.unitCost > 0) existing.unitCost = item.unitCost;
     if (!existing.notes && item.notes) existing.notes = item.notes;
@@ -84,6 +99,17 @@ interface InventoryState {
   ensureRow: (category: string, subcategory: string, unit?: string) => InventoryItem;
   /** Add `delta` to an item's `sold` (negative reverses); recomputes endingQty. */
   adjustSold: (id: string, delta: number) => void;
+  /**
+   * Record `qty` cuttings consumed (used) on a row. Draws the stock physically
+   * out of the pools — `needsPacking` first, then `packed` (+ availableForSale)
+   * for any overflow — and increments the lifetime `used` counter. Because the
+   * pools shrink, endingQty drops by the amount actually consumed (calcEnding
+   * drops the `used` term for cuttings to avoid double-counting). `qty` is
+   * clamped to what's on hand (needsPacking + packed). Returns how much of the
+   * consumption spilled over into `packed` (0 if it all fit in needsPacking) so
+   * callers can surface an "ate into packed stock" notice.
+   */
+  adjustUsedCuttings: (id: string, qty: number) => number;
   /** Add `delta` to an item's `purchased` (negative reverses); recomputes endingQty. */
   adjustPurchased: (id: string, delta: number) => void;
   /**
@@ -106,6 +132,11 @@ interface InventoryState {
    */
   adjustProduced: (id: string, delta: number) => void;
   /**
+   * Add `delta` to an item's `harvested` pool (never below 0); recomputes
+   * endingQty. Farm output logged in Production (Fruit kg / Cuttings) lands here.
+   */
+  adjustHarvested: (id: string, delta: number) => void;
+  /**
    * Pack `qty` bare cuttings on a row: moves them from `needsPacking` into
    * `packed` (and credits the `availableForSale` / Ready-for-Sale pool). `qty`
    * is clamped to what's currently in `needsPacking`. Returns the quantity
@@ -113,13 +144,21 @@ interface InventoryState {
    * was already on hand; it just becomes sellable.
    */
   packCuttings: (id: string, qty: number) => number;
+  /**
+   * Reverse a pack: move `qty` cuttings from `packed` + `availableForSale` back
+   * into `needsPacking`. Clamped to the still-unsold (availableForSale) amount so
+   * a partly-sold pack can't go negative. Returns the quantity actually unpacked.
+   * endingQty is unchanged (mirror of packCuttings).
+   */
+  unpackCuttings: (id: string, qty: number) => number;
   /** Total inventory value = sum of endingQty * unitCost */
   totalValue: () => number;
   /** Items where endingQty <= lowStockThreshold */
   lowStockItems: (threshold?: number) => InventoryItem[];
 }
 
-const SEED_VERSION = 9;
+// v10: added the `harvested` pool (farm output from Production feeds endingQty).
+const SEED_VERSION = 10;
 
 /** Build an inventory item row cleanly */
 function inv(
@@ -145,6 +184,7 @@ function inv(
     breedingStock: 0,
     availableForSale: 0,
     produced: 0,
+    harvested: 0,
     notes,
     createdAt: now(),
     updatedAt: now(),
@@ -227,6 +267,7 @@ export const useInventoryStore = create<InventoryState>()(
             breedingStock: (existing.breedingStock ?? 0) + (data.breedingStock ?? 0),
             availableForSale: (existing.availableForSale ?? 0) + (data.availableForSale ?? 0),
             produced: (existing.produced ?? 0) + (data.produced ?? 0),
+            harvested: (existing.harvested ?? 0) + (data.harvested ?? 0),
             // Backfill a missing unit / zero cost from the new data; never clobber.
             unit: existing.unit || data.unit,
             unitCost: existing.unitCost > 0 ? existing.unitCost : (data.unitCost ?? 0),
@@ -242,8 +283,9 @@ export const useInventoryStore = create<InventoryState>()(
           breedingStock: 0,
           availableForSale: 0,
           produced: 0,
+          harvested: 0,
           ...data,
-          endingQty: calcEnding({ packed: 0, needsPacking: 0, produced: 0, ...data }),
+          endingQty: calcEnding({ packed: 0, needsPacking: 0, produced: 0, harvested: 0, ...data }),
           id: generateId(),
           createdAt: now(),
           updatedAt: now(),
@@ -283,6 +325,36 @@ export const useInventoryStore = create<InventoryState>()(
           }),
         })),
 
+      adjustUsedCuttings: (id, qty) => {
+        const row = get().items.find((i) => i.id === id);
+        if (!row) return 0;
+        // Clamp to a positive amount and to what's actually on hand.
+        const onHand = (row.needsPacking ?? 0) + (row.packed ?? 0);
+        const toUse = Math.min(Math.max(0, qty), onHand);
+        if (toUse <= 0) return 0;
+        // Consume Needs Packing first, then spill the remainder into Packed
+        // (and the still-unsold availableForSale subset alongside it).
+        const fromNeedsPacking = Math.min(toUse, row.needsPacking ?? 0);
+        const fromPacked = toUse - fromNeedsPacking;
+        set((state) => ({
+          items: state.items.map((i) => {
+            if (i.id !== id) return i;
+            const updated = {
+              ...i,
+              needsPacking: Math.max(0, (i.needsPacking ?? 0) - fromNeedsPacking),
+              packed: Math.max(0, (i.packed ?? 0) - fromPacked),
+              // Keep the sellable subset in step when packed stock is consumed.
+              availableForSale: Math.max(0, (i.availableForSale ?? 0) - fromPacked),
+              used: i.used + toUse,
+              updatedAt: now(),
+            };
+            updated.endingQty = calcEnding(updated);
+            return updated;
+          }),
+        }));
+        return fromPacked;
+      },
+
       adjustPurchased: (id, delta) =>
         set((state) => ({
           items: state.items.map((i) => {
@@ -320,6 +392,7 @@ export const useInventoryStore = create<InventoryState>()(
           breedingStock: 0,
           availableForSale: 0,
           produced: 0,
+          harvested: 0,
           notes: '',
         });
       },
@@ -362,6 +435,16 @@ export const useInventoryStore = create<InventoryState>()(
           }),
         })),
 
+      adjustHarvested: (id, delta) =>
+        set((state) => ({
+          items: state.items.map((i) => {
+            if (i.id !== id) return i;
+            const updated = { ...i, harvested: Math.max(0, (i.harvested ?? 0) + delta), updatedAt: now() };
+            updated.endingQty = calcEnding(updated);
+            return updated;
+          }),
+        })),
+
       packCuttings: (id, qty) => {
         const row = get().items.find((i) => i.id === id);
         if (!row) return 0;
@@ -386,11 +469,49 @@ export const useInventoryStore = create<InventoryState>()(
         return toPack;
       },
 
+      unpackCuttings: (id, qty) => {
+        const row = get().items.find((i) => i.id === id);
+        if (!row) return 0;
+        // Only unpack what's still unsold: clamp to both the requested qty and the
+        // still-available (unsold) packed pool, so a partly-sold pack can't drive
+        // pools negative. Moves packed + availableForSale back into needsPacking.
+        const toUnpack = Math.min(Math.max(0, qty), row.availableForSale ?? 0, row.packed ?? 0);
+        if (toUnpack <= 0) return 0;
+        set((state) => ({
+          items: state.items.map((i) => {
+            if (i.id !== id) return i;
+            const updated = {
+              ...i,
+              packed: Math.max(0, (i.packed ?? 0) - toUnpack),
+              availableForSale: Math.max(0, (i.availableForSale ?? 0) - toUnpack),
+              needsPacking: (i.needsPacking ?? 0) + toUnpack,
+              updatedAt: now(),
+            };
+            // endingQty unchanged: the pools net to zero (mirror of packCuttings).
+            updated.endingQty = calcEnding(updated);
+            return updated;
+          }),
+        }));
+        return toUnpack;
+      },
+
       totalValue: () =>
         get().items.reduce((sum, i) => sum + i.endingQty * i.unitCost, 0),
 
+      // Low stock = a physical-stock item at/under the threshold. A positive-but-low
+      // qty must also be priced (unitCost > 0) to count — unpriced clutter shouldn't
+      // nag. But a row that's out of stock (endingQty <= 0) always counts regardless
+      // of price: zero stock is an alert no matter what. Excluded either way:
+      //  - service categories (labor, delivery, utilities…) — auto, never stock,
+      //  - rows manually flagged `ignoreLowStock` — the user's "ok to be low" opt-out.
       lowStockItems: (threshold = 5) =>
-        get().items.filter((i) => i.endingQty <= threshold && i.unitCost > 0),
+        get().items.filter(
+          (i) =>
+            i.endingQty <= threshold &&
+            (i.endingQty <= 0 || i.unitCost > 0) &&
+            !isServiceCategory(i.category) &&
+            !i.ignoreLowStock,
+        ),
     }),
     {
       name: 'dfd-inventory',

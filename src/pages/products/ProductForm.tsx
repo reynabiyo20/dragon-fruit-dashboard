@@ -15,15 +15,16 @@ import { useProductCategoryStore } from '../../store/productCategoryStore';
 import { syncTaxonomy } from '../../store/taxonomySync';
 import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import { formatPHP } from '../../utils/format';
+import { ENTITY, toastSuccess, VALIDATION, FIELD } from '../../constants/messages';
 
 const schema = z.object({
-  category: z.string().min(1, 'Category is required'),
+  category: z.string().min(1, VALIDATION.categoryRequired),
   subcategory: z.string(),
   costPHP: z.coerce.number().min(0),
   sellingPricePHP: z.coerce.number().min(0),
   costUSD: z.coerce.number().min(0),
   sellingPriceUSD: z.coerce.number().min(0),
-  unit: z.string().min(1, 'Unit is required'),
+  unit: z.string().min(1, VALIDATION.unitRequired),
   notes: z.string(),
 });
 
@@ -39,6 +40,9 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
   const unitValues = useUnitStore((s) => s.values);
   const addUnit = useUnitStore((s) => s.add);
   const unitOptions = unitValues.map((v) => ({ value: v, label: v }));
+  // Default a new product's unit to the first managed unit (falls back to '')
+  // rather than a hardcoded 'Kg', so it always mirrors the Settings list.
+  const defaultUnit = unitValues[0] ?? '';
 
   // Subscribe to the raw entries (stable reference) and derive lists locally.
   // Calling a store method inside the selector would return a new array each
@@ -53,6 +57,7 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
 
   const { register, handleSubmit, control, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
+    mode: 'onTouched',
     defaultValues: {
       category: product?.category ?? '',
       subcategory: product?.subcategory ?? '',
@@ -60,7 +65,7 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
       sellingPricePHP: product?.sellingPricePHP ?? 0,
       costUSD: product?.costUSD ?? 0,
       sellingPriceUSD: product?.sellingPriceUSD ?? 0,
-      unit: product?.unit ?? 'Kg',
+      unit: product?.unit ?? defaultUnit,
       notes: product?.notes ?? '',
     },
   });
@@ -102,10 +107,10 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
     const payload = { ...data };
     if (product) {
       updateProduct(product.id, payload);
-      toast.success('Product updated');
+      toast.success(toastSuccess(ENTITY.product, 'updated'));
     } else {
       addProduct(payload);
-      toast.success('Product added');
+      toast.success(toastSuccess(ENTITY.product, 'created'));
     }
     onClose();
   };
@@ -125,7 +130,7 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
       <div className="grid grid-cols-2 gap-4">
         <div>
           <CreatableSelect
-            label="Type"
+            label={FIELD.category.label}
             required
             value={watch('category')}
             options={categoryOptions}
@@ -135,31 +140,31 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
               setValue('subcategory', '', { shouldDirty: true });
             }}
             onCreate={(v) => syncTaxonomy(v, '')}
-            placeholder="Select type…"
+            placeholder={FIELD.category.placeholder}
             error={errors.category?.message}
-            createLabel="+ Create new type…"
-            newFieldLabel="New Type"
+            createLabel="+ Add new category…"
+            newFieldLabel="New Category"
             newFieldPlaceholder="e.g. Drink"
           />
           <SimilarEntryHint
             value={pType ?? ''}
             options={categoryOptions.map((o) => o.value)}
-            noun="type"
+            noun="category"
             onPick={(v) => setValue('category', v, { shouldValidate: true, shouldDirty: true })}
           />
         </div>
         <div>
           <CreatableSelect
-            label="Variety / Item"
+            label={FIELD.subcategory.label}
             value={watch('subcategory')}
             options={subcategoryOptions}
             onChange={(v) => setValue('subcategory', v, { shouldValidate: true, shouldDirty: true })}
             onCreate={(v) => syncTaxonomy(selectedType, v)}
             disabled={!selectedType}
-            placeholder={selectedType ? 'Select variety…' : 'Pick a type first'}
+            placeholder={selectedType ? FIELD.subcategory.placeholder : 'Pick a category first'}
             error={errors.subcategory?.message}
-            createLabel="+ Create new variety…"
-            newFieldLabel="New Variety / Item"
+            createLabel="+ Add new subcategory…"
+            newFieldLabel="New Subcategory"
             newFieldPlaceholder="e.g. Thai White"
           />
           {selectedType && (
@@ -192,19 +197,19 @@ export function ProductForm({ product, onClose }: ProductFormProps) {
       </div>
 
       <CreatableSelect
-        label="Unit"
+        label={FIELD.unit.label}
         required
         value={watch('unit')}
         options={unitOptions}
         onChange={(v) => setValue('unit', v, { shouldValidate: true, shouldDirty: true })}
         onCreate={addUnit}
         error={errors.unit?.message}
-        createLabel="+ Create new unit…"
+        createLabel="+ Add new unit…"
         newFieldLabel="New Unit"
         newFieldPlaceholder="e.g. crate"
       />
 
-      <TextareaField label="Notes" {...register('notes')} rows={2} />
+      <TextareaField label={FIELD.notes.label} {...register('notes')} rows={2} />
 
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" type="button" onClick={onClose}>Cancel</Button>

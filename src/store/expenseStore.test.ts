@@ -111,6 +111,43 @@ describe('expenseStore totalByCategory', () => {
   });
 });
 
+describe('expenseStore bookkeeping breakdowns', () => {
+  it('groups spend by accounting classification, pooling missing into Unclassified', () => {
+    store().addExpense(baseExpense({ amount: 100, accountingClassification: 'Operating Expense (OpEx)' }));
+    store().addExpense(baseExpense({ amount: 250, accountingClassification: 'Operating Expense (OpEx)' }));
+    store().addExpense(baseExpense({ amount: 400, accountingClassification: 'Capital Expenditure (CapEx)' }));
+    store().addExpense(baseExpense({ amount: 50 })); // no classification
+    const totals = store().totalByAccountingClassification();
+    expect(totals['Operating Expense (OpEx)']).toBe(350);
+    expect(totals['Capital Expenditure (CapEx)']).toBe(400);
+    expect(totals['Unclassified']).toBe(50);
+  });
+
+  it('groups spend by expense type / cost behavior', () => {
+    store().addExpense(baseExpense({ amount: 300, expenseType: 'Fixed' }));
+    store().addExpense(baseExpense({ amount: 200, expenseType: 'Variable' }));
+    store().addExpense(baseExpense({ amount: 100, expenseType: 'Variable' }));
+    const totals = store().totalByExpenseType();
+    expect(totals['Fixed']).toBe(300);
+    expect(totals['Variable']).toBe(300);
+  });
+
+  it('uses the full expense amount (incl. multi-item) for the breakdown', () => {
+    store().addExpense(
+      baseExpense({
+        accountingClassification: 'Cost of Goods Sold (COGS)',
+        expenseType: 'Variable',
+        items: [
+          item({ quantity: 2, unitPrice: 50 }), // 100
+          item({ quantity: 1, unitPrice: 25 }), // 25
+        ],
+      })
+    );
+    expect(store().totalByAccountingClassification()['Cost of Goods Sold (COGS)']).toBe(125);
+    expect(store().totalByExpenseType()['Variable']).toBe(125);
+  });
+});
+
 describe('expenseStore price observations', () => {
   it('pricedSupplies lists distinct supplies from multi-item + legacy expenses', () => {
     store().addExpense(

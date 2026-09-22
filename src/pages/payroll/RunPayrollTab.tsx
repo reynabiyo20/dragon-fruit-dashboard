@@ -25,6 +25,10 @@ const todayISO = () => format(new Date(), 'yyyy-MM-dd');
 interface Draft {
   employeeId: string;
   employeeName: string;
+  // Bookkeeping snapshot taken from the employee at generate time, so the saved
+  // entry can be broken down by labor type / accounting classification.
+  laborType?: string;
+  accountingClassification?: string;
   workedDays: WorkedDay[];
   daysWorked: number;
   rate: number;
@@ -91,6 +95,8 @@ export function RunPayrollTab({ onDone }: RunPayrollTabProps) {
         next[emp.id] = {
           employeeId: emp.id,
           employeeName: emp.name,
+          laborType: emp.laborType,
+          accountingClassification: emp.accountingClassification,
           workedDays,
           daysWorked,
           rate: emp.dailyRate,
@@ -127,6 +133,8 @@ export function RunPayrollTab({ onDone }: RunPayrollTabProps) {
       payPeriodEnd: end,
       employeeId: d.employeeId,
       employeeName: d.employeeName,
+      laborType: d.laborType,
+      accountingClassification: d.accountingClassification,
       daysWorked: d.daysWorked,
       workedDays: d.workedDays,
       rate: d.rate,

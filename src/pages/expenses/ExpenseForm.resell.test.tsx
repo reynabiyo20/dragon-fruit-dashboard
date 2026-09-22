@@ -22,7 +22,7 @@ import type { Expense } from '../../types';
 beforeEach(() => {
   useVendorStore.setState({
     vendors: [
-      { id: 'v1', vendor: 'Acme', contact: '', phone: '', supplies: [{ category: 'Fertilizer', subcategory: 'Magnesium' }], notes: '', createdAt: '', updatedAt: '' },
+      { id: 'v1', vendor: 'Acme', contact: '', phone: '', location: { province: '', municipality: '' }, supplies: [{ category: 'Fertilizer', subcategory: 'Magnesium' }], notes: '', createdAt: '', updatedAt: '' },
     ],
     _seeded: 999,
   });
@@ -72,7 +72,7 @@ describe('ExpenseForm resell cascade (single quantifiable expense)', () => {
     // Construction Material is a consumable — opt-in only, not auto-cascaded.
     useVendorStore.setState({
       vendors: [
-        { id: 'v1', vendor: 'Acme', contact: '', phone: '', supplies: [{ category: 'Construction Material', subcategory: 'Cement' }], notes: '', createdAt: '', updatedAt: '' },
+        { id: 'v1', vendor: 'Acme', contact: '', phone: '', location: { province: '', municipality: '' }, supplies: [{ category: 'Construction Material', subcategory: 'Cement' }], notes: '', createdAt: '', updatedAt: '' },
       ],
       _seeded: 999,
     });

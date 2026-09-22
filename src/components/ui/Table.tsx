@@ -1,17 +1,29 @@
-import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react';
-import { ChevronUp, ChevronDown, ChevronsUpDown, Search, Trash2, X, Pencil } from 'lucide-react';
+import { useState, useMemo, useRef, useEffect, Fragment, type ReactNode } from 'react';
+import { ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, Trash2, X, Pencil } from 'lucide-react';
 import { Button } from './Button';
 import { ConfirmDialog } from './ConfirmDialog';
+import { getTableUiState, useTableUiStore } from '../../store/tableUiStore';
 
 /** Inline-edit config for a column. When present, the cell becomes editable. */
 export interface EditableConfig<T> {
   type: 'text' | 'number' | 'select';
-  /** Options for a select editor. */
-  options?: { value: string; label: string }[];
+  /**
+   * Options for a select editor. Either a fixed list or a function of the row,
+   * so the choices can depend on the record (e.g. a location cell offering
+   * provinces for a local customer but countries for an international one).
+   */
+  options?: { value: string; label: string }[] | ((row: T) => { value: string; label: string }[]);
   /** Current raw value to seed the editor (defaults to String(accessor) is unsafe, so provide this). */
   getValue: (row: T) => string | number;
   step?: string; // for number inputs
   min?: number;
+  /**
+   * Optional per-row gate. When provided and it returns false, the cell renders
+   * read-only for that row (the column is otherwise editable). Lets a column be
+   * editable for some rows but not others — e.g. Beginning Qty is editable for
+   * most inventory items but locked for Cuttings (tracked via packing pools).
+   */
+  canEdit?: (row: T) => boolean;
 }
 
 export interface Column<T> {
@@ -23,6 +35,26 @@ export interface Column<T> {
   headerClassName?: string;
   /** When set, this cell can be edited inline. */
   editable?: EditableConfig<T>;
+  /**
+   * When true (and an `expandable` config is provided on the Table), this cell
+   * acts as the expand/collapse trigger for its row: its content becomes a
+   * button that toggles the row's detail panel, with a chevron affordance. Only
+   * meaningful for rows where `expandable.isExpandable` returns true. A column
+   * can't be both an expand trigger and inline-editable.
+   */
+  expandTrigger?: boolean;
+}
+
+/**
+ * Optional expandable-row config. When provided, a row can expand to show a
+ * full-width detail panel rendered by `render`. Which cell toggles it is decided
+ * by the column's `expandTrigger` flag (falls back to the whole row when no
+ * column opts in). `isExpandable` gates which rows can expand at all — rows that
+ * return false render normally with no toggle.
+ */
+export interface ExpandableConfig<T> {
+  render: (row: T) => ReactNode;
+  isExpandable?: (row: T) => boolean;
 }
 
 /** A custom bulk action button shown in the selection toolbar (e.g. "Mark Paid").
@@ -59,6 +91,8 @@ interface TableProps<T> {
   bulkActions?: BulkActions<T>;
   /** Called when an editable cell is committed. `value` is string for text/select, number for number. */
   onCellEdit?: (row: T, columnKey: string, value: string | number) => void;
+  /** When set, rows can expand to a full-width detail panel (see ExpandableConfig). */
+  expandable?: ExpandableConfig<T>;
   /**
    * Optional per-row highlight classes (e.g. a soft-orange harvest alert). Applied
    * on top of the base row styles; the selection highlight still takes precedence
@@ -71,6 +105,14 @@ interface TableProps<T> {
    * column with a `sortValue`.
    */
   defaultSort?: { key: string; dir: 'asc' | 'desc' };
+  /**
+   * When set, the table's search query and sort are persisted under this key
+   * (e.g. "customers") so they survive navigating away and back — and reloads —
+   * until the user clears the search or changes the sort. Different tables use
+   * different keys so each remembers its own state independently. Omit to keep
+   * the table's sort/search ephemeral (resets on unmount).
+   */
+  persistKey?: string;
   /**
    * When set, the single most-recently-created row (by the string returned here,
    * e.g. `createdAt`) floats to the TOP until the user clicks a column header —
@@ -98,19 +140,59 @@ export function Table<T>({
   actions,
   bulkActions,
   onCellEdit,
+  expandable,
   rowClassName,
   defaultSort,
+  persistKey,
   getRecency,
   focusId,
 }: TableProps<T>) {
-  const [query, setQuery] = useState('');
-  const [sortKey, setSortKey] = useState<string | null>(defaultSort?.key ?? null);
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(defaultSort?.dir ?? 'asc');
+  // Seed initial sort/search from the persisted per-table UI state when a
+  // `persistKey` is given; otherwise fall back to the plain defaults. Read once
+  // at mount via useState initializers so we don't re-read on every render.
+  const initial = useMemo(
+    () =>
+      persistKey
+        ? getTableUiState(persistKey, {
+            sortKey: defaultSort?.key ?? null,
+            sortDir: defaultSort?.dir ?? 'asc',
+          })
+        : {
+            query: '',
+            sortKey: defaultSort?.key ?? null,
+            sortDir: (defaultSort?.dir ?? 'asc') as 'asc' | 'desc',
+            userSorted: false,
+          },
+    // Intentionally mount-only: persistKey/defaultSort are stable per page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  const [query, setQueryState] = useState(initial.query);
+  const [sortKey, setSortKey] = useState<string | null>(initial.sortKey);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(initial.sortDir);
   // Whether the user has clicked a header to sort. Until they do, a just-created
   // row is pinned to the top (see getRecency). After a manual sort, pinning stops.
-  const [userSorted, setUserSorted] = useState(false);
+  const [userSorted, setUserSorted] = useState(initial.userSorted);
+
+  // Persist any change back to the per-table store (no-op without a persistKey),
+  // so navigating away and back — or reloading — restores the same view.
+  const patchTableUi = useTableUiStore((s) => s.patch);
+  const setQuery = (value: string) => {
+    setQueryState(value);
+    if (persistKey) patchTableUi(persistKey, { query: value });
+  };
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Keys of rows whose detail panel is currently expanded (opt-in via `expandable`).
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+  const toggleExpanded = (key: string) =>
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   // The row currently pulsing from a cross-link focus. Mirrors `focusId` but
   // clears itself after the highlight so the row settles back to normal.
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
@@ -130,6 +212,8 @@ export function Table<T>({
       clearTimeout(scrollTimer);
       clearTimeout(clearTimer);
     };
+    // Run only when the cross-link target changes; setQuery is stable in intent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId]);
 
   // Baseline recency captured at mount: the newest `getRecency` value among the
@@ -145,12 +229,14 @@ export function Table<T>({
   }
 
   const handleSort = (key: string) => {
+    const nextKey = key;
+    const nextDir: 'asc' | 'desc' =
+      sortKey === key ? (sortDir === 'asc' ? 'desc' : 'asc') : 'asc';
     setUserSorted(true);
-    if (sortKey === key) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortKey(key);
-      setSortDir('asc');
+    setSortKey(nextKey);
+    setSortDir(nextDir);
+    if (persistKey) {
+      patchTableUi(persistKey, { sortKey: nextKey, sortDir: nextDir, userSorted: true });
     }
   };
 
@@ -379,6 +465,8 @@ export function Table<T>({
                 const key = keyExtractor(row);
                 const isSelected = selected.has(key);
                 const isFocused = focusedKey === key;
+                const canExpand = !!expandable && (expandable.isExpandable?.(row) ?? true);
+                const isExpanded = canExpand && expandedKeys.has(key);
                 // Focus highlight (cross-link) wins, then selection, then any
                 // per-row highlight, falling back to the default hover style.
                 const customRowClass = rowClassName?.(row) ?? '';
@@ -390,8 +478,8 @@ export function Table<T>({
                       ? customRowClass
                       : 'hover:bg-primary-50/50';
                 return (
+                  <Fragment key={key}>
                   <tr
-                    key={key}
                     ref={isFocused ? focusRowRef : undefined}
                     className={`transition-colors ${rowClass}`}
                   >
@@ -406,26 +494,52 @@ export function Table<T>({
                         />
                       </td>
                     )}
-                    {columns.map((col) => (
-                      <td key={col.key} className={`px-4 py-3 text-gray-700 ${col.className ?? ''}`}>
-                        {col.editable && onCellEdit ? (
-                          <EditableCell
-                            display={col.accessor(row)}
-                            config={col.editable}
-                            row={row}
-                            onCommit={(value) => onCellEdit(row, col.key, value)}
-                          />
-                        ) : (
-                          col.accessor(row)
-                        )}
-                      </td>
-                    ))}
+                    {columns.map((col) => {
+                      // An expand-trigger cell (on an expandable row) becomes a
+                      // button that toggles the detail panel, with a chevron.
+                      const isTrigger = col.expandTrigger && canExpand;
+                      return (
+                        <td key={col.key} className={`px-4 py-3 text-gray-700 ${col.className ?? ''}`}>
+                          {isTrigger ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleExpanded(key)}
+                              aria-expanded={isExpanded}
+                              className="group/expand flex items-start gap-1 text-left w-full rounded px-1 -mx-1 hover:bg-primary-50 focus:outline-none focus:ring-1 focus:ring-primary-400"
+                              title={isExpanded ? 'Hide items' : 'Show all items'}
+                            >
+                              <ChevronRight
+                                className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-gray-400 transition-transform ${isExpanded ? 'rotate-90 text-primary-600' : 'group-hover/expand:text-primary-500'}`}
+                              />
+                              <span className="min-w-0">{col.accessor(row)}</span>
+                            </button>
+                          ) : col.editable && onCellEdit && (col.editable.canEdit?.(row) ?? true) ? (
+                            <EditableCell
+                              display={col.accessor(row)}
+                              config={col.editable}
+                              row={row}
+                              onCommit={(value) => onCellEdit(row, col.key, value)}
+                            />
+                          ) : (
+                            col.accessor(row)
+                          )}
+                        </td>
+                      );
+                    })}
                     {actions && (
                       <td className="px-4 py-3 text-right whitespace-nowrap">
                         {actions(row)}
                       </td>
                     )}
                   </tr>
+                  {isExpanded && (
+                    <tr className={customRowClass || 'bg-primary-50/30'}>
+                      <td colSpan={columnCount} className="px-4 pb-4 pt-0">
+                        {expandable!.render(row)}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })
             )}
@@ -509,6 +623,10 @@ function EditableCell<T>({ display, config, row, onCommit }: EditableCellProps<T
     'w-full px-2 py-1 text-sm border border-primary-400 rounded focus:outline-none focus:ring-1 focus:ring-primary-500 bg-white';
 
   if (config.type === 'select') {
+    // Options may be a fixed list or depend on the row (e.g. provinces vs.
+    // countries for a location cell), so resolve them against the current row.
+    const resolvedOptions =
+      typeof config.options === 'function' ? config.options(row) : (config.options ?? []);
     return (
       <select
         ref={(el) => { inputRef.current = el; }}
@@ -521,7 +639,7 @@ function EditableCell<T>({ display, config, row, onCommit }: EditableCellProps<T
         }}
         className={commonClass}
       >
-        {(config.options ?? []).map((o) => (
+        {resolvedOptions.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>
         ))}
       </select>

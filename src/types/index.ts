@@ -51,6 +51,17 @@ export interface Employee {
   name: string;
   position: string;
   employeeType: EmployeeType | string;
+  /**
+   * Bookkeeping attributes synced from the "Labor" tab, defaulted from the
+   * role/position (see laborDefaultsForRole) and editable per employee:
+   *  - laborType: Direct / Indirect / Selling / Administrative labor.
+   *  - accountingClassification: how the wage books — COGS vs OpEx variants
+   *    (canonical ACCOUNTING_CLASSIFICATIONS values, shared with expenses).
+   * These snapshot onto each PayrollEntry at Run-Payroll time so payroll cost can
+   * be broken down by labor type / classification. Optional for back-compat.
+   */
+  laborType?: string;
+  accountingClassification?: string;
   dailyRate: number;
   weeklyRate: number;       // auto-calculated: dailyRate * 5
   monthlySalary: number;    // auto-calculated: weeklyRate * 4
@@ -74,6 +85,24 @@ export type SaleType = (typeof SALE_TYPES)[number];
 /** What a Farm Partner supplies. Scopes the subcategory options. */
 export type FarmPartnerCategory = (typeof FARM_PARTNER_CATEGORIES)[number];
 
+/**
+ * Structured location shared by Customers and Vendors. Strictly a province and
+ * its municipality (drawn from the cascading geographic dataset). Required on
+ * new/edited records; may be empty-string on legacy data that predates the
+ * feature (defaulted during store migration).
+ */
+export interface Location {
+  /**
+   * Country. Defaults to 'Philippines'. When set to any other country the record
+   * is "international" — province/municipality (which are Philippine-only) no
+   * longer apply and are left blank. Optional for back-compat; treat a missing
+   * or empty value as 'Philippines' (see isInternationalLocation).
+   */
+  country?: string;
+  province: string;
+  municipality: string;
+}
+
 export interface Customer {
   id: string;
   customerName: string;
@@ -82,6 +111,8 @@ export interface Customer {
   fbMessengerName: string;
   email: string;
   address: string;
+  /** Required province + municipality. See Location. */
+  location: Location;
   /**
    * A Farm Partner is a customer the business ALSO buys from (fruit/cuttings).
    * When true, the customer cascades into the Vendors module and the two fields
@@ -91,7 +122,11 @@ export interface Customer {
   farmPartner?: boolean;
   /** What the partner supplies: Fruit | Cuttings | Both ('' when not a partner). */
   farmPartnerCategory?: FarmPartnerCategory | string;
-  /** Specific fruit colour / variety they supply ('' = whole category / unspecified). */
+  /**
+   * Fruit colours / varieties they supply. One or more values, stored
+   * comma-separated (e.g. "Red, White, Moroccan"). '' = whole category /
+   * unspecified.
+   */
   farmPartnerSubcategory?: string;
   notes: string;
   createdAt: string;
@@ -111,6 +146,8 @@ export interface Vendor {
   vendor: string;
   contact: string;
   phone: string;
+  /** Required province + municipality. See Location. */
+  location: Location;
   supplies: VendorSupply[];        // structured list of what this vendor provides
   notes: string;
   createdAt: string;
@@ -138,10 +175,26 @@ export interface Sale {
   invoiceNumber: string;
   customerId: string;
   customerName: string;
+  /**
+   * Contact snapshot captured on the sale (esp. for online orders). Stored on the
+   * sale itself — not just the linked customer — so editing the sale always
+   * retains what was entered, even for a one-off/manual customer that was never
+   * saved to the Customers list. Optional for back-compat with older sales.
+   */
+  customerPhone?: string;
+  customerFbMessenger?: string;
+  customerAddress?: string;
   /** How this sale happened — walk-in, online, wholesale, … (see SALE_TYPES). '' if unspecified. */
   saleType: string;
   items: SaleItem[];
-  subtotal: number;         // auto-calculated: sum of item totals
+  subtotal: number;         // auto-calculated: sum of item totals, in `currency`
+  /**
+   * Currency this sale is recorded in. Local (Philippine-customer) sales are
+   * PHP; international-customer sales are USD. PHP and USD are kept strictly
+   * separate — amounts are never converted. Optional for back-compat; treat a
+   * missing value as 'PHP'.
+   */
+  currency?: Currency;
   paymentMethod: PaymentMethod | string;
   paymentDetails: string;
   paid: boolean;
@@ -178,13 +231,17 @@ export type ExpenseCategory = string;
  * historical records. Items may span different categories within one expense.
  */
 /**
- * For a CUTTINGS purchase, whether the cuttings arrive ready to sell or still
- * need packing. Drives which inventory pool the purchased quantity lands in:
- *  - 'packed': into the `packed` / Ready-for-Sale pool (sellable immediately).
- *  - 'bare':   into the `needsPacking` pool (on hand but not yet sellable).
+ * For a CUTTINGS purchase, what the cuttings are for. Drives where the purchased
+ * quantity lands:
+ *  - 'packed':  into the `packed` / Ready-for-Sale pool (sellable immediately).
+ *  - 'bare':    into the `needsPacking` pool (on hand but not yet sellable).
+ *  - 'replant': NOT a sellable inventory pool — instead it creates a Propagation
+ *               batch (source: Purchased) pre-allocated For Replant, entering the
+ *               reserve → plant lifecycle. The batch owns the breedingStock pool,
+ *               so the expense does not also credit packed/needsPacking.
  * Only meaningful for the Cuttings category; ignored otherwise.
  */
-export type CuttingPurchaseState = 'packed' | 'bare';
+export type CuttingPurchaseState = 'packed' | 'bare' | 'replant';
 
 export interface ExpenseItem {
   productId: string;      // '' for ad-hoc lines not tied to a catalog product
@@ -201,8 +258,14 @@ export interface ExpenseItem {
    * mis-flag can be corrected. Cuttings/Fruit/Fertilizer always cascade regardless.
    */
   resell?: boolean;
-  /** Cuttings only: whether this line arrives packed or bare (needs packing). */
+  /** Cuttings only: whether this line arrives packed, bare, or is for replant. */
   cuttingState?: CuttingPurchaseState;
+  /**
+   * Cuttings + replant only: the cutting type (grafted/rooted vs unrooted) of the
+   * purchased cuttings, so the Propagation batch tracks the right rooting/ready
+   * timeline. Ignored for packed/bare (sellable) lines.
+   */
+  cuttingType?: string;
 }
 
 export interface Expense {
@@ -222,8 +285,17 @@ export interface Expense {
    * quantity/unit/unitPrice/category fields above instead.
    */
   items?: ExpenseItem[];
-  amount: number;                     // for multi-item expenses this equals the sum of item totals
+  amount: number;                     // for multi-item expenses this equals the sum of item totals, in `currency`
+  /**
+   * Currency this expense is recorded in. Purchases from a local (Philippine)
+   * vendor are PHP; from an international vendor, USD. PHP and USD are kept
+   * strictly separate — never converted. Optional for back-compat (treat missing
+   * as 'PHP').
+   */
+  currency?: Currency;
   paymentMethod: PaymentMethod | string;
+  /** Extra reference for methods that need it (Bank Transfer/Gcash/Zelle/Check). Only when paid. */
+  paymentDetails?: string;
   paid: boolean;
   /**
    * Bookkeeping attributes (optional for back-compat with older records):
@@ -233,8 +305,13 @@ export interface Expense {
    */
   accountingClassification?: string;
   expenseType?: string;
-  /** Cuttings only (single-line expense): whether it arrives packed or bare. */
+  /** Cuttings only (single-line expense): packed, bare, or for replant. */
   cuttingState?: CuttingPurchaseState;
+  /**
+   * Cuttings + replant only (single-line expense): the cutting type of the
+   * purchased cuttings for the Propagation batch's timeline. Ignored otherwise.
+   */
+  cuttingType?: string;
   notes: string;
   createdAt: string;
   updatedAt: string;
@@ -254,6 +331,13 @@ export interface PayrollEntry {
   payPeriodEnd: string;
   employeeId: string;
   employeeName: string;
+  /**
+   * Bookkeeping attributes snapshotted from the employee at Run-Payroll time so
+   * this period's wage can be broken down by labor type / accounting
+   * classification (COGS vs OpEx). Optional for back-compat with older entries.
+   */
+  laborType?: string;
+  accountingClassification?: string;
   daysWorked: number;       // source of truth for pay math; derived from workedDays when present
   /**
    * Per-day timesheet detail (full/half days). Optional — legacy entries and
@@ -305,7 +389,7 @@ export interface InventoryItem {
   purchased: number;
   used: number;
   sold: number;
-  endingQty: number;        // auto-calc: beginning + purchased - used - sold + packed + needsPacking + produced
+  endingQty: number;        // auto-calc: beginning + purchased - used - sold + packed + needsPacking + produced + harvested
   unitCost: number;
   /**
    * Cuttings-specific allocation pools, driven by the Cuttings Store post-rooting
@@ -324,12 +408,26 @@ export interface InventoryItem {
    *  - produced:         finished goods manufactured in-house from other inventory
    *                      inputs (e.g. a drink pressed from fruit, our own fertilizer
    *                      blend). Credited by the Produce step and feeds endingQty.
+   *  - harvested:        farm output logged in Production — Fruit (kg) or Cuttings
+   *                      harvested from our own plants. Credited by the harvest→
+   *                      inventory cascade and feeds endingQty. Distinct from
+   *                      `produced` so Reports can separate orchard yield from
+   *                      manufacturing.
    */
   packed?: number;
   needsPacking?: number;
   breedingStock?: number;
   availableForSale?: number;
   produced?: number;
+  harvested?: number;
+  /**
+   * Manual "don't track low stock" flag. When true, this row never shows a
+   * low-stock alert regardless of ending quantity. Used for items logged to
+   * inventory that aren't really replenishable stock (e.g. a one-off supply, or
+   * a non-service expense that still shouldn't nag as "low"). Service categories
+   * are already excluded automatically; this covers everything else. undefined = false.
+   */
+  ignoreLowStock?: boolean;
   notes: string;
   createdAt: string;
   updatedAt: string;
@@ -384,12 +482,35 @@ export interface ProductionEntry {
    */
   harvestedById?: string;
   harvestedByName?: string;
+  /**
+   * What was harvested and where — used to credit the matching inventory row.
+   *  - subcategory: the dragon-fruit variety (inventory join key). '' / undefined
+   *    on legacy entries → not credited to inventory.
+   *  - sectionId: the farm section it came from (links to farmStore).
+   *  - harvestKind: 'Fruit' (credits Fruit inventory in kg) or 'Cuttings'
+   *    (credits the Cuttings row's packed/needsPacking pool). Defaults to 'Fruit'.
+   */
+  subcategory?: string;
+  sectionId?: string;
+  harvestKind?: 'Fruit' | 'Cuttings';
+  /** Cuttings harvest only: do the harvested cuttings arrive packed or bare? */
+  cuttingState?: CuttingPurchaseState;
+  /**
+   * Cuttings harvest only: propagation details for the internal cutting batch
+   * this harvest creates (see cuttingStore.recordHarvestBatch). A `harvestKind:
+   * 'Cuttings'` entry becomes an "Internal Batch" so it flows through the same
+   * reserve → plant → forecast lifecycle as a manually-added batch. Optional /
+   * defaulted for back-compat. Own-farm harvest has no source cost.
+   */
+  cuttingType?: string;      // Grafted / Unrooted — drives estimated ready date
+  rootWeeks?: number;        // expected weeks to root
+  dateGrafted?: string;      // when grafting happened ('' if not yet)
   plants: number;
   /**
-   * Date the plants/batch flowered. Dragon fruit ripens ~30 days after
-   * flowering, so this drives the estimated harvest window used to highlight
-   * rows entering their harvest window. Optional / '' for legacy or
-   * harvest-only records.
+   * @deprecated Fruit lifecycle is now tracked at the SECTION level
+   * (FarmSection.lifecycleStage + stageDate), tagged from a farm walk-through.
+   * Kept only so legacy persisted entries don't lose data; no longer written or
+   * read by the app. The harvest-window estimate comes from the entry's section.
    */
   floweringDate?: string;
   fruitsHarvested: number;
@@ -413,7 +534,41 @@ export interface FarmSection {
   currentPlantCapacity: number;
   plantSubcategory: string;
   pic: string;              // Person-in-Charge
+  /**
+   * Fruit lifecycle stage of the plants in this area, tagged from a quick
+   * walk-through scan (Vegetative / Flowering / Fruiting / Dormant / Mixed).
+   * Optional / undefined until first tagged. When set to Flowering with a
+   * `stageDate`, it drives the area-level harvest-window estimate (~30 days).
+   * A section-level approximation — it can't distinguish varieties/cohorts
+   * within the area.
+   */
+  lifecycleStage?: string;
+  /** When the section entered its current lifecycle stage (ISO date). */
+  stageDate?: string;
   notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A living population of dragon-fruit plants of ONE variety standing in ONE
+ * section — the actual orchard (as opposed to `currentPlantCapacity`, which is
+ * the section's max). Feeds the wholesale forecast's "farm" pool. A planting can
+ * be entered directly (pre-existing plants) or graduate from a cutting batch
+ * once deployed (`sourceBatchId`), so the two never double-count.
+ */
+export interface StandingPlanting {
+  id: string;
+  sectionId: string;            // FK → FarmSection.id
+  subcategory: string;          // dragon-fruit variety
+  cuttingType?: string;         // Grafted / Unrooted — affects first-harvest timing
+  plantCount: number;           // living plants of this variety in this section
+  plantedDate?: string;         // when they went in the ground (drives maturity)
+  /** true = already established & fruiting (project to the next in-season window). */
+  matureFruiting?: boolean;
+  /** Set when this planting graduated from a cutting batch (dedupe key). */
+  sourceBatchId?: string;
+  notes?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -428,8 +583,8 @@ export type CuttingStatus = (typeof CUTTING_STATUSES)[number];
  *
  * This tracks the *growing* side only — cost, rooting, and readiness. Selling
  * cuttings happens in the Sales flow (unified with all other products), so a
- * batch has no sales/revenue of its own. `quantitySold` is recorded manually to
- * reflect how many have left the batch.
+ * batch has no sales/revenue of its own. All sourced cuttings are considered on
+ * hand; real sales draw down the Inventory pools, not the batch.
  */
 /** Where a Cuttings Store record came from — our nursery, or a customer purchase. */
 export type CuttingSource = (typeof CUTTING_SOURCES)[number];
@@ -457,6 +612,22 @@ export interface CuttingBatch {
   customerName?: string;
   saleId?: string;
   /**
+   * For "Purchased" records: the vendor the cuttings were bought from and the
+   * source Expense.id. Keeps the batch in sync when the expense is edited and
+   * lets the expense own the batch's lifecycle (delete cascades), the same way
+   * productionEntryId links a harvest-sourced internal batch.
+   */
+  vendorId?: string;
+  vendorName?: string;
+  expenseId?: string;
+  /**
+   * For batches created from a Farm Production cuttings harvest: the source
+   * ProductionEntry.id. Keeps the batch in sync when the harvest is edited and
+   * lets the harvest own the batch's lifecycle (delete cascades). Still a normal
+   * "Internal Batch" for every other purpose.
+   */
+  productionEntryId?: string;
+  /**
    * Internal batches only: the date the cuttings were harvested (user input).
    * Cuttings then callus/heal for a fixed hold (CUTTING_CALLUSING_DAYS) before
    * their growth countdown begins, so the planting/acquisition date below is
@@ -469,7 +640,6 @@ export interface CuttingBatch {
   sourceCostPerCutting: number; // ₱ paid per cutting to source it
   graftCostPerCutting: number;  // optional extra prep cost per cutting (₱)
   rootWeeks: number;           // expected weeks to root (2–4)
-  quantitySold: number;        // how many have been sold/left the batch (manual)
   /**
    * Post-rooting destination for an internal rooted-ready batch. '' / undefined
    * until the user flags it. Setting it cascades the quantity into the matching
@@ -510,7 +680,7 @@ export interface CuttingBatch {
    */
   estimatedReadyDate: string;
   totalCost: number;           // auto = quantitySourced * (sourceCost + graftCost)
-  quantityAvailable: number;   // auto = quantitySourced - quantitySold
+  quantityAvailable: number;   // auto = quantitySourced (all sourced cuttings are on hand)
   status: CuttingStatus;       // auto from dates + quantities
   notes: string;
   createdAt: string;

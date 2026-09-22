@@ -10,12 +10,19 @@ import { Button } from '../../components/ui/Button';
 import { DuplicateWarning } from '../../components/forms/DuplicateWarning';
 import { useDuplicateCheck } from '../../hooks/useDuplicateCheck';
 import { formatPHP } from '../../utils/format';
-import { useEmployeeTypeStore, useEmployeePositionStore } from '../../store/optionStores';
+import {
+  useEmployeeTypeStore, useEmployeePositionStore,
+  useLaborTypeStore, useAccountingClassificationStore,
+} from '../../store/optionStores';
+import { laborDefaultsForRole } from '../../constants';
+import { ENTITY, toastSuccess, requiredMsg, FIELD } from '../../constants/messages';
 
 const schema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  position: z.string().min(1, 'Position is required'),
-  employeeType: z.string().min(1, 'Employee type is required'),
+  name: z.string().min(1, requiredMsg('Name')),
+  position: z.string().min(1, requiredMsg('Position')),
+  employeeType: z.string().min(1, requiredMsg('Employee type')),
+  laborType: z.string(),
+  accountingClassification: z.string(),
   dailyRate: z.coerce.number().min(0),
   commission: z.coerce.number().min(0).max(100, 'Commission must be 0–100%'),
   notes: z.string(),
@@ -38,14 +45,26 @@ export function EmployeeForm({ employee, onClose }: EmployeeFormProps) {
   const positionValues = useEmployeePositionStore((s) => s.values);
   const addPosition = useEmployeePositionStore((s) => s.add);
   const positionOptions = positionValues.map((v) => ({ value: v, label: v }));
+  // Labor type + accounting classification option lists (bookkeeping).
+  const laborTypeValues = useLaborTypeStore((s) => s.values);
+  const addLaborType = useLaborTypeStore((s) => s.add);
+  const laborTypeOptions = laborTypeValues.map((v) => ({ value: v, label: v }));
+  const acValues = useAccountingClassificationStore((s) => s.values);
+  const addAccountingClassification = useAccountingClassificationStore((s) => s.add);
+  const acOptions = acValues.map((v) => ({ value: v, label: v }));
   const isEditing = !!employee;
 
   const { register, handleSubmit, control, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
+    mode: 'onTouched',
     defaultValues: {
       name: employee?.name ?? '',
       position: employee?.position ?? '',
       employeeType: employee?.employeeType ?? 'Full Time',
+      // Keep the saved labor bookkeeping when editing; a new employee's fields
+      // fill in when the position is chosen (see handlePositionChange).
+      laborType: employee?.laborType ?? '',
+      accountingClassification: employee?.accountingClassification ?? '',
       dailyRate: employee?.dailyRate ?? 0,
       commission: employee?.commission ?? 0,
       notes: employee?.notes ?? '',
@@ -65,13 +84,27 @@ export function EmployeeForm({ employee, onClose }: EmployeeFormProps) {
     !isEditing
   );
 
+  // Picking a position prefills the labor bookkeeping defaults for that role,
+  // but only fills a field that's still empty so it never clobbers a manual
+  // choice or an edited employee's saved values.
+  const handlePositionChange = (v: string) => {
+    setValue('position', v, { shouldValidate: true, shouldDirty: true });
+    const labor = laborDefaultsForRole(v);
+    if (!watch('laborType')?.trim()) {
+      setValue('laborType', labor.laborType, { shouldDirty: true });
+    }
+    if (!watch('accountingClassification')?.trim()) {
+      setValue('accountingClassification', labor.accountingClassification, { shouldDirty: true });
+    }
+  };
+
   const onSubmit = (data: FormValues) => {
     if (employee) {
       updateEmployee(employee.id, data);
-      toast.success('Employee updated');
+      toast.success(toastSuccess(ENTITY.employee, 'updated'));
     } else {
       addEmployee(data);
-      toast.success('Employee added');
+      toast.success(toastSuccess(ENTITY.employee, 'created'));
     }
     onClose();
   };
@@ -95,8 +128,8 @@ export function EmployeeForm({ employee, onClose }: EmployeeFormProps) {
           required
           value={watch('position')}
           options={positionOptions}
-          onChange={(v) => setValue('position', v, { shouldValidate: true, shouldDirty: true })}
-          onCreate={addPosition}
+          onChange={handlePositionChange}
+          onCreate={(v) => { addPosition(v); handlePositionChange(v); }}
           placeholder="Select position…"
           createLabel="+ Create new position…"
           newFieldLabel="New Position"
@@ -119,6 +152,32 @@ export function EmployeeForm({ employee, onClose }: EmployeeFormProps) {
         error={errors.employeeType?.message}
       />
 
+      {/* Labor bookkeeping — defaults from the role, editable. Feeds the payroll
+          COGS-vs-OpEx breakdowns in Reports & the Dashboard. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <CreatableSelect
+          label="Labor Type"
+          value={watch('laborType')}
+          options={laborTypeOptions}
+          onChange={(v) => setValue('laborType', v, { shouldDirty: true })}
+          onCreate={(v) => { addLaborType(v); setValue('laborType', v, { shouldDirty: true }); }}
+          placeholder="Defaults from position…"
+          createLabel="+ Add new labor type…"
+          newFieldLabel="New Labor Type"
+          newFieldPlaceholder="e.g. Direct Labor"
+        />
+        <CreatableSelect
+          label="Accounting Classification"
+          value={watch('accountingClassification')}
+          options={acOptions}
+          onChange={(v) => setValue('accountingClassification', v, { shouldDirty: true })}
+          onCreate={(v) => { addAccountingClassification(v); setValue('accountingClassification', v, { shouldDirty: true }); }}
+          placeholder="Defaults from position…"
+          createLabel="+ Add new classification…"
+          newFieldLabel="New accounting classification"
+        />
+      </div>
+
       <div className="grid grid-cols-2 gap-4">
         <InputField label="Daily Rate (₱)" type="number" step="0.01" error={errors.dailyRate?.message} {...register('dailyRate')} hint="Weekly & monthly rates auto-calculated" />
         <InputField label="Commission (%)" type="number" step="0.01" min="0" max="100" error={errors.commission?.message} {...register('commission')} hint="Percentage of sales they make (e.g. 3 = 3%)" />
@@ -130,7 +189,7 @@ export function EmployeeForm({ employee, onClose }: EmployeeFormProps) {
         <DisplayField label="Monthly Salary (auto)" value={formatPHP(monthlySalary)} highlight />
       </div>
 
-      <TextareaField label="Notes" {...register('notes')} rows={2} />
+      <TextareaField label={FIELD.notes.label} {...register('notes')} rows={2} />
 
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" type="button" onClick={onClose}>Cancel</Button>

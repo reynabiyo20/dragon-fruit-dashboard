@@ -10,6 +10,14 @@ interface CreatableSelectProps {
   label: string;
   value: string;
   options: Option[];
+  /**
+   * A SUPERSET of `options` used only for the "already exists / similar entry"
+   * detection while creating (and to avoid creating a duplicate). Useful when the
+   * visible dropdown is filtered/scoped (e.g. categories limited to a vendor's
+   * supplies) but you still want to warn against — and reuse — a value that
+   * exists elsewhere in the full taxonomy. Defaults to `options`.
+   */
+  matchOptions?: Option[];
   onChange: (value: string) => void;
   /** Called when the user confirms a brand-new value; should persist it, then the value is selected */
   onCreate: (value: string) => void;
@@ -20,6 +28,8 @@ interface CreatableSelectProps {
   createLabel?: string;      // e.g. "+ Create new unit…"
   newFieldLabel?: string;    // e.g. "New Unit"
   newFieldPlaceholder?: string;
+  /** Optional helper text shown under the select (hidden while creating / on error). */
+  hint?: string;
 }
 
 /**
@@ -31,6 +41,7 @@ export function CreatableSelect({
   label,
   value,
   options,
+  matchOptions,
   onChange,
   onCreate,
   required,
@@ -40,10 +51,14 @@ export function CreatableSelect({
   createLabel = '+ Create new…',
   newFieldLabel = 'New value',
   newFieldPlaceholder = 'Type a new value…',
+  hint,
 }: CreatableSelectProps) {
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState('');
   const [localError, setLocalError] = useState('');
+  // Detection/dedup list — the full set when a superset is provided, else the
+  // visible options.
+  const detectOptions = matchOptions ?? options;
 
   const handleSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     if (e.target.value === CREATE_NEW) {
@@ -71,9 +86,9 @@ export function CreatableSelect({
       setLocalError('Enter a value');
       return;
     }
-    // If the value already exists (case-insensitive), don't create a duplicate —
-    // just select the existing one.
-    const existing = options.find((o) => o.value.trim().toLowerCase() === v.toLowerCase());
+    // If the value already exists (case-insensitive) anywhere in the detection
+    // set, don't create a duplicate — just select the existing one.
+    const existing = detectOptions.find((o) => o.value.trim().toLowerCase() === v.toLowerCase());
     if (existing) {
       pickExisting(existing.value);
       return;
@@ -119,25 +134,37 @@ export function CreatableSelect({
             <Button type="button" variant="outline" size="sm" className="shrink-0 px-2" icon={<X className="w-4 h-4" />} onClick={cancelCreate} aria-label="Cancel">Cancel</Button>
           </div>
         </div>
-        {/* Similar-entry suggestions + exact-duplicate notice for the typed value. */}
+        {/* Similar-entry suggestions + exact-duplicate notice for the typed value.
+            Checked against the full detection set so a value that exists outside
+            the (possibly scoped) visible options is still flagged/reusable. */}
         <SimilarEntryHint
           value={draft}
-          options={options.map((o) => o.label)}
+          options={detectOptions.map((o) => o.label)}
           noun={(newFieldLabel || 'entry').replace(/^new\s+/i, '').toLowerCase()}
           onPick={pickExisting}
         />
+        {/* Show the caller's helper text while creating too, so guidance like
+            "saved as the default unit for X" stays visible during entry. */}
+        {hint && !localError && <p className="text-xs text-gray-400">{hint}</p>}
         {localError && <p className="text-xs text-red-500">{localError}</p>}
       </div>
     );
   }
 
-  // Defensively ensure the current value is always a selectable option, even if
-  // the options list hasn't yet caught up with a just-created value. Without this,
-  // a controlled <select> whose value has no matching <option> silently resets to "".
-  const hasValue = value && options.some((o) => o.value === value);
+  // Match the current value to an option case-insensitively so casing drift
+  // between a stored record (e.g. seed "Kg") and the managed option list (e.g.
+  // renamed to "kg" in Settings) doesn't render a duplicate <option>. When a
+  // case-insensitive match exists we reuse the option's canonical casing as the
+  // <select> value; otherwise we inject the raw value so a genuinely new /
+  // not-yet-persisted value stays selectable (a controlled <select> whose value
+  // has no matching <option> would silently reset to "").
+  const matched = value
+    ? options.find((o) => o.value.trim().toLowerCase() === value.trim().toLowerCase())
+    : undefined;
+  const selectedValue = matched ? matched.value : value;
   const mergedOptions = [
     ...options,
-    ...(value && !hasValue ? [{ value, label: value }] : []),
+    ...(value && !matched ? [{ value, label: value }] : []),
     { value: CREATE_NEW, label: createLabel },
   ];
 
@@ -147,8 +174,9 @@ export function CreatableSelect({
       required={required}
       placeholder={placeholder}
       error={error}
+      hint={hint}
       disabled={disabled}
-      value={value}
+      value={selectedValue}
       onChange={handleSelectChange}
       options={mergedOptions}
     />

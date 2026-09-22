@@ -1,4 +1,5 @@
 import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
 import { Save } from 'lucide-react';
@@ -7,15 +8,16 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { Button } from '../../components/ui/Button';
 import { SectionCard } from '../../components/ui/SectionCard';
 import { InputField, TextareaField } from '../../components/forms/FormField';
+import { ENTITY, toastSuccess, requiredMsg } from '../../constants/messages';
 
 const schema = z.object({
-  businessName: z.string().min(1, 'Business name is required'),
-  owner: z.string().min(1, 'Owner is required'),
-  farmAddress: z.string().default(''),
+  businessName: z.string().min(1, requiredMsg('Business name')),
+  owner: z.string().min(1, requiredMsg('Owner')),
+  farmAddress: z.string(),
   startedYear: z.coerce.number().min(1900).max(2100),
   fiscalYear: z.coerce.number().min(2000).max(2100),
-  banksRaw: z.string().default(''),
-  notes: z.string().default(''),
+  banksRaw: z.string(),
+  notes: z.string(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -24,6 +26,8 @@ export function BusinessPage() {
   const { info, setInfo } = useBusinessStore();
 
   const { register, handleSubmit, formState: { errors, isSubmitting, isDirty } } = useForm<FormValues>({
+    resolver: zodResolver(schema),
+    mode: 'onTouched',
     defaultValues: {
       businessName: info.businessName,
       owner: info.owner,
@@ -45,7 +49,7 @@ export function BusinessPage() {
       banks: data.banksRaw.split(',').map((b) => b.trim()).filter(Boolean),
       notes: data.notes,
     });
-    toast.success('Business information saved');
+    toast.success(toastSuccess(ENTITY.business, 'saved'));
   };
 
   return (

@@ -22,7 +22,7 @@ import type { Expense } from '../../types';
 beforeEach(() => {
   useVendorStore.setState({
     vendors: [
-      { id: 'v1', vendor: 'Acme', contact: '', phone: '', supplies: [{ category: 'Fertilizer', subcategory: 'Nitrogen' }], notes: '', createdAt: '', updatedAt: '' },
+      { id: 'v1', vendor: 'Acme', contact: '', phone: '', location: { province: '', municipality: '' }, supplies: [{ category: 'Fertilizer', subcategory: 'Nitrogen' }], notes: '', createdAt: '', updatedAt: '' },
     ],
     _seeded: 999,
   });

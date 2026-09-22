@@ -36,7 +36,9 @@ describe('expense → inventory cascade', () => {
       date: '2026-01-01', vendorId: 'v1', vendorName: 'Acme',
       category: 'Fertilizer', subcategory: 'Magnesium', description: '',
       quantity: 4, unit: 'sack', unitPrice: 100, amount: 400,
-      paymentMethod: 'Cash', paid: true, notes: '',
+      // Pending, not paid: a paid expense is locked from edit/delete, so the
+      // inventory-cascade fixtures use an unpaid (editable/deletable) expense.
+      paymentMethod: 'Cash', paid: false, notes: '',
     };
   }
 
@@ -80,5 +82,60 @@ describe('expense → inventory cascade', () => {
     });
     expect(rowOf('Fertilizer', 'Magnesium')?.purchased).toBe(3);
     expect(rowOf('Fertilizer', 'Cocopeat')?.purchased).toBe(2);
+  });
+});
+
+/**
+ * A Paid expense is locked: it can't be deleted, and non-status fields can't be
+ * edited, so its inventory/dashboard/KPI effects can't silently drift after
+ * money changed hands. Setting it back to Pending unlocks both.
+ */
+describe('paid expense lock', () => {
+  beforeEach(() => {
+    useExpenseStore.setState({ expenses: [] });
+    useInventoryStore.setState({ items: [invRow('Fertilizer', 'Magnesium')], _seeded: 999 });
+  });
+
+  const rowOf = (c: string, s: string) => useInventoryStore.getState().findByCategorySub(c, s);
+
+  function paidExpense() {
+    return {
+      date: '2026-01-01', vendorId: 'v1', vendorName: 'Acme',
+      category: 'Fertilizer', subcategory: 'Magnesium', description: '',
+      quantity: 4, unit: 'sack', unitPrice: 100, amount: 400,
+      paymentMethod: 'Cash', paid: true, notes: '',
+    };
+  }
+
+  it('blocks deleting a paid expense (inventory unchanged)', () => {
+    const e = useExpenseStore.getState().addExpense(paidExpense());
+    expect(rowOf('Fertilizer', 'Magnesium')?.purchased).toBe(4);
+    useExpenseStore.getState().deleteExpense(e.id);
+    // Still present, inventory untouched.
+    expect(useExpenseStore.getState().getExpense(e.id)).toBeDefined();
+    expect(rowOf('Fertilizer', 'Magnesium')?.purchased).toBe(4);
+  });
+
+  it('blocks editing non-status fields on a paid expense', () => {
+    const e = useExpenseStore.getState().addExpense(paidExpense());
+    useExpenseStore.getState().updateExpense(e.id, { quantity: 10, amount: 1000 });
+    const after = useExpenseStore.getState().getExpense(e.id)!;
+    expect(after.quantity).toBe(4);
+    expect(after.amount).toBe(400);
+    expect(rowOf('Fertilizer', 'Magnesium')?.purchased).toBe(4);
+  });
+
+  it('allows toggling a paid expense back to Pending, which then unlocks edit + delete', () => {
+    const e = useExpenseStore.getState().addExpense(paidExpense());
+    // Unlock by marking Pending.
+    useExpenseStore.getState().updateExpense(e.id, { paid: false });
+    expect(useExpenseStore.getState().getExpense(e.id)?.paid).toBe(false);
+    // Now editing cascades to inventory.
+    useExpenseStore.getState().updateExpense(e.id, { quantity: 6, amount: 600 });
+    expect(rowOf('Fertilizer', 'Magnesium')?.purchased).toBe(6);
+    // And deletion reverses it.
+    useExpenseStore.getState().deleteExpense(e.id);
+    expect(useExpenseStore.getState().getExpense(e.id)).toBeUndefined();
+    expect(rowOf('Fertilizer', 'Magnesium')?.purchased).toBe(0);
   });
 });

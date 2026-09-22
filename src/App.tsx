@@ -4,11 +4,10 @@ import { Toaster } from 'react-hot-toast';
 import { Layout } from './components/layout/Layout';
 import { RouteFallback } from './components/layout/RouteFallback';
 // Dashboard is the landing route — keep it eager so first paint has no spinner
-import { DashboardPage } from './pages/dashboard/DashboardPage';
+import { DashboardPage } from './pages/dashboard-reports/DashboardPage';
 
 // Lazy-load the rest so each page is a separate chunk fetched on demand.
 // The pages use named exports, so map them to `default` for React.lazy.
-const ReportsPage = lazy(() => import('./pages/reports/ReportsPage').then((m) => ({ default: m.ReportsPage })));
 const PriceHistoryPage = lazy(() => import('./pages/price-history/PriceHistoryPage').then((m) => ({ default: m.PriceHistoryPage })));
 const SalesPage = lazy(() => import('./pages/sales/SalesPage').then((m) => ({ default: m.SalesPage })));
 const ExpensesPage = lazy(() => import('./pages/expenses/ExpensesPage').then((m) => ({ default: m.ExpensesPage })));
@@ -25,6 +24,7 @@ const ProductionPage = lazy(() => import('./pages/production/ProductionPage').th
 const FarmPage = lazy(() => import('./pages/farm/FarmPage').then((m) => ({ default: m.FarmPage })));
 const BusinessPage = lazy(() => import('./pages/business/BusinessPage').then((m) => ({ default: m.BusinessPage })));
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const ProcessFlowsPage = lazy(() => import('./pages/process-flows/ProcessFlowsPage').then((m) => ({ default: m.ProcessFlowsPage })));
 
 export default function App() {
   return (
@@ -41,7 +41,6 @@ export default function App() {
         <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route path="/"                    element={<DashboardPage />} />
-            <Route path="/reports"             element={<ReportsPage />} />
             <Route path="/price-history"       element={<PriceHistoryPage />} />
             <Route path="/sales"               element={<SalesPage />} />
             <Route path="/expenses"            element={<ExpensesPage />} />
@@ -57,6 +56,7 @@ export default function App() {
             <Route path="/production"          element={<ProductionPage />} />
             <Route path="/farm"                element={<FarmPage />} />
             <Route path="/business"            element={<BusinessPage />} />
+            <Route path="/process-flows"       element={<ProcessFlowsPage />} />
             <Route path="/settings"            element={<SettingsPage />} />
             <Route path="*"                    element={<DashboardPage />} />
           </Routes>

@@ -13,26 +13,40 @@ import { useSaleStore } from './saleStore';
 export type UnlinkResult = 'removed' | 'kept-priced' | 'kept-sold' | 'not-found';
 
 /**
- * Remove a product (by category+subcategory) from the sellable Products list when
- * it's safe to do so. Returns:
- *  - 'removed'     the product was auto-created & unused → deleted
- *  - 'kept-priced' it has a selling price the user set → kept
+ * Remove a product (by category+subcategory) from the sellable Products list.
+ *
+ * By default this is conservative — it only deletes an auto-created row that
+ * carries no selling price and isn't referenced by a sale. Pass `force: true`
+ * (used after an explicit user confirmation, e.g. unchecking "Do you sell this?")
+ * to also remove a row that has a selling price set. A product referenced by a
+ * recorded sale is NEVER deleted, even when forced, since that would orphan sales
+ * history. Inventory is never touched.
+ *
+ * Returns:
+ *  - 'removed'     the product was deleted
+ *  - 'kept-priced' it has a selling price and `force` was not set → kept
  *  - 'kept-sold'   it's referenced by a sale → kept
  *  - 'not-found'   no matching product
  */
-export function unlinkResellProduct(category: string, subcategory: string): UnlinkResult {
+export function unlinkResellProduct(
+  category: string,
+  subcategory: string,
+  options: { force?: boolean } = {},
+): UnlinkResult {
   const productStore = useProductStore.getState();
   const product = productStore.findByCategorySub(category, subcategory);
   if (!product) return 'not-found';
 
-  // Keep it if the user has set a selling price — that's deliberate sellable data.
-  if (product.sellingPricePHP > 0) return 'kept-priced';
-
   // Keep it if any sale references this product — deleting would orphan history.
+  // This block holds even when forced.
   const referenced = useSaleStore
     .getState()
     .sales.some((s) => s.items.some((i) => i.productId === product.id));
   if (referenced) return 'kept-sold';
+
+  // Without an explicit force, keep a product the user has priced — that's
+  // deliberate sellable data we shouldn't silently drop.
+  if (!options.force && product.sellingPricePHP > 0) return 'kept-priced';
 
   productStore.deleteProduct(product.id);
   return 'removed';

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, X, Tag, Pencil, Check } from 'lucide-react';
+import { Plus, X, Tag, Pencil, Check, Search } from 'lucide-react';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { SectionCard } from '../../components/ui/SectionCard';
 import { Button } from '../../components/ui/Button';
@@ -9,14 +9,18 @@ import { InputField } from '../../components/forms/FormField';
 import { SimilarEntryHint } from '../../components/forms/SimilarEntryHint';
 import {
   useSaleTypeStore,
-  useInventoryCategoryStore,
   useUnitStore,
   useEmployeeTypeStore,
   useEmployeePositionStore,
+  useAccountingClassificationStore,
+  useExpenseTypeStore,
+  useLaborTypeStore,
 } from '../../store/optionStores';
+import { CreatableSelect } from '../../components/forms/CreatableSelect';
 import type { OptionListStore } from '../../store/optionListStore';
 import { useExpenseCategoryStore, type ExpenseCategoryEntry } from '../../store/expenseCategoryStore';
 import { useProductCategoryStore, type ProductCategoryEntry } from '../../store/productCategoryStore';
+import { useAssumptionsStore, type LifecycleAssumptions } from '../../store/assumptionsStore';
 import { useSaleStore } from '../../store/saleStore';
 import { useProductStore } from '../../store/productStore';
 import { useInventoryStore } from '../../store/inventoryStore';
@@ -42,11 +46,13 @@ interface OptionListManagerProps {
   noun: string;
   /** Optional: how many existing records still use a value (shown before delete) */
   countUsage?: (value: string) => number;
+  /** Global Settings search — filters the visible chips + hides a non-matching card. */
+  search?: string;
 }
 
-function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, countUsage }: OptionListManagerProps) {
+function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, countUsage, search = '' }: OptionListManagerProps) {
   // Subscribe to `values` directly so the list re-renders on add/rename/remove
-  const values = useStore((s) => s.values);
+  const allValues = useStore((s) => s.values);
   const add = useStore((s) => s.add);
   const rename = useStore((s) => s.rename);
   const remove = useStore((s) => s.remove);
@@ -56,6 +62,14 @@ function OptionListManager({ title, subtitle, useStore, addPlaceholder, noun, co
   // Inline rename: the value being edited + its working draft
   const [editing, setEditing] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
+
+  // Apply the global search: match against the card title OR individual values.
+  // (Computed AFTER all hooks so the early "hide" return never skips a hook.)
+  const q = search.trim().toLowerCase();
+  const titleMatches = q === '' || title.toLowerCase().includes(q);
+  const values = q === '' || titleMatches ? allValues : allValues.filter((v) => v.toLowerCase().includes(q));
+  // Hide the whole card when searching and neither the title nor any value matches.
+  if (q !== '' && !titleMatches && values.length === 0) return null;
 
   const handleAdd = () => {
     const v = draft.trim();
@@ -235,13 +249,20 @@ type CategoryModalMode =
   | { kind: 'add' }                                        // new category (+ optional subcategory)
   | { kind: 'addSubcategory'; category: string }           // new subcategory under a fixed category
   | { kind: 'renameCategory'; category: string }           // rename a whole category (all rows)
-  | { kind: 'renameSubcategory'; entry: ExpenseCategoryEntry }; // rename one subcategory row
+  | { kind: 'renameSubcategory'; entry: ExpenseCategoryEntry } // rename one subcategory row
+  | { kind: 'editBookkeeping'; entry: ExpenseCategoryEntry };   // set classification + type for a row
 
-function CategoryManager() {
-  const { entries, categories, subcategoriesFor, addEntry, updateEntry, renameCategory, deleteEntry, isQuantifiable, setQuantifiable } =
+function CategoryManager({ search = '' }: { search?: string }) {
+  const { entries, categories, subcategoriesFor, addEntry, updateEntry, renameCategory, deleteEntry, isQuantifiable, setQuantifiable, setBookkeeping } =
     useExpenseCategoryStore();
   const expenses = useExpenseStore((s) => s.expenses);
   const vendors = useVendorStore((s) => s.vendors);
+  // Same editable option lists the Expense form uses, so a category's default
+  // classification/type is chosen from (and can extend) the exact same choices.
+  const acOptions = useAccountingClassificationStore((s) => s.values).map((v) => ({ value: v, label: v }));
+  const addAccountingClassification = useAccountingClassificationStore((s) => s.add);
+  const expenseTypeOptions = useExpenseTypeStore((s) => s.values).map((v) => ({ value: v, label: v }));
+  const addExpenseType = useExpenseTypeStore((s) => s.add);
 
   /** Expenses + vendor supplies that use a (category, subcategory) entry. */
   const usageFor = (e: ExpenseCategoryEntry): number => {
@@ -267,6 +288,10 @@ function CategoryManager() {
   const [mode, setMode] = useState<CategoryModalMode>({ kind: 'add' });
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState<CategoryFormState>({ category: '', subcategory: '' });
+  const [bk, setBk] = useState<{ accountingClassification: string; expenseType: string }>({
+    accountingClassification: '',
+    expenseType: '',
+  });
   const [formError, setFormError] = useState('');
 
   const openAdd = () => {
@@ -297,10 +322,28 @@ function CategoryManager() {
     setModalOpen(true);
   };
 
+  const openEditBookkeeping = (entry: ExpenseCategoryEntry) => {
+    setMode({ kind: 'editBookkeeping', entry });
+    setForm({ category: entry.category, subcategory: entry.subcategory });
+    setBk({
+      accountingClassification: entry.accountingClassification ?? '',
+      expenseType: entry.expenseType ?? '',
+    });
+    setFormError('');
+    setModalOpen(true);
+  };
+
   const closeModal = () => setModalOpen(false);
 
   const norm = (s: string) => s.trim().toLowerCase();
   const handleSave = () => {
+    // Bookkeeping edit doesn't touch the category name — just the classification
+    // + type for this row — so handle it before the name-required guard below.
+    if (mode.kind === 'editBookkeeping') {
+      setBookkeeping(mode.entry.id, bk.accountingClassification.trim(), bk.expenseType.trim());
+      closeModal();
+      return;
+    }
     const category = form.category.trim();
     if (!category) {
       setFormError('Category name is required');
@@ -356,18 +399,27 @@ function CategoryManager() {
     mode.kind === 'add' ? 'Add Category Entry'
       : mode.kind === 'addSubcategory' ? `Add Subcategory to "${mode.category}"`
         : mode.kind === 'renameCategory' ? 'Rename Category'
-          : 'Rename Subcategory';
+          : mode.kind === 'editBookkeeping' ? 'Bookkeeping Classification'
+            : 'Rename Subcategory';
 
   // Group entries by category for the chip display
-  const grouped = categories().map((cat) => ({
-    category: cat,
-    subs: entries.filter((e) => e.category === cat && e.subcategory !== ''),
-  }));
+  // Apply the global search: keep a category when its name matches, else keep
+  // only its matching subcategories; drop a category with no match at all.
+  const q = search.trim().toLowerCase();
+  const grouped = categories()
+    .map((cat) => {
+      const allSubs = entries.filter((e) => e.category === cat && e.subcategory !== '');
+      if (q === '') return { category: cat, subs: allSubs };
+      const catMatches = cat.toLowerCase().includes(q);
+      const subs = catMatches ? allSubs : allSubs.filter((e) => e.subcategory.toLowerCase().includes(q));
+      return { category: cat, subs, _hidden: !catMatches && subs.length === 0 };
+    })
+    .filter((g) => !('_hidden' in g) || !g._hidden);
 
   return (
     <SectionCard
       title="Vendor & Expense Categories"
-      subtitle={`${entries.length} entries across ${categories().length} categories · "Quantifiable" means the expense form captures quantity × unit price`}
+      subtitle={`${entries.length} entries across ${categories().length} categories · "Quantifiable" captures qty × unit price · the tag icon sets the bookkeeping classification & type`}
       actions={
         <Button size="sm" icon={<Plus className="w-4 h-4" />} onClick={openAdd}>
           Add
@@ -382,6 +434,15 @@ function CategoryManager() {
             // The top-level (empty-subcategory) entry, used to delete the whole category row
             const topLevel = entries.find((e) => e.category === category && e.subcategory === '');
             const quantifiable = isQuantifiable(category);
+            // Row whose bookkeeping the header pencil edits: the top-level row if
+            // present, else the first subcategory row (so single-row categories
+            // like Electricity are still editable from the header).
+            const headerEntry =
+              topLevel ?? subs[0] ?? entries.find((e) => e.category === category);
+            // Distinct classification/type across this category's rows — shown as
+            // a compact summary chip on the card.
+            const bkClasses = [...new Set(entries.filter((e) => e.category === category && e.accountingClassification).map((e) => e.accountingClassification as string))];
+            const bkTypes = [...new Set(entries.filter((e) => e.category === category && e.expenseType).map((e) => e.expenseType as string))];
             return (
               <div key={category} className="rounded-lg border border-gray-200 p-3">
                 <div className="flex items-center justify-between gap-2 mb-2">
@@ -405,6 +466,17 @@ function CategoryManager() {
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </button>
+                    {headerEntry && (
+                      <button
+                        type="button"
+                        onClick={() => openEditBookkeeping(headerEntry)}
+                        aria-label={`Set bookkeeping classification for ${category}`}
+                        title="Bookkeeping classification & type"
+                        className="p-1 rounded-md text-gray-400 hover:text-primary-700 hover:bg-primary-50 focus:outline-none focus:ring-2 focus:ring-primary-400"
+                      >
+                        <Tag className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     {topLevel && (
                       <button
                         type="button"
@@ -428,6 +500,24 @@ function CategoryManager() {
                   Quantifiable (qty × price)
                 </label>
 
+                {/* Bookkeeping default(s) synced from the sheet: accounting
+                    classification + cost behavior. Shows "Mixed" when a
+                    category's subcategories differ. */}
+                {(bkClasses.length > 0 || bkTypes.length > 0) && (
+                  <div className="flex flex-wrap gap-1 mb-2 text-[11px]">
+                    {bkClasses.length > 0 && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                        {bkClasses.length === 1 ? bkClasses[0] : 'Mixed classification'}
+                      </span>
+                    )}
+                    {bkTypes.length > 0 && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                        {bkTypes.length === 1 ? bkTypes[0] : 'Mixed type'}
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 {subs.length === 0 ? (
                   <p className="text-xs text-gray-400">No subcategories</p>
                 ) : (
@@ -435,9 +525,19 @@ function CategoryManager() {
                     {subs.map((e) => (
                       <span
                         key={e.id}
+                        title={[e.accountingClassification, e.expenseType].filter(Boolean).join(' · ') || undefined}
                         className="inline-flex items-center gap-0.5 pl-2 pr-0.5 py-0.5 rounded-full text-xs bg-primary-50 text-primary-700"
                       >
                         {e.subcategory}
+                        <button
+                          type="button"
+                          onClick={() => openEditBookkeeping(e)}
+                          aria-label={`Set bookkeeping for ${e.subcategory}`}
+                          title="Bookkeeping classification & type"
+                          className="p-0.5 rounded-full text-primary-400 hover:text-primary-700 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-primary-400"
+                        >
+                          <Tag className="w-3 h-3" />
+                        </button>
                         <button
                           type="button"
                           onClick={() => openRenameSubcategory(e)}
@@ -466,6 +566,42 @@ function CategoryManager() {
 
       {/* Add / rename modal */}
       <Modal open={modalOpen} onClose={closeModal} title={modalTitle} size="sm">
+        {mode.kind === 'editBookkeeping' ? (
+          <div className="space-y-4">
+            <p className="text-xs text-gray-500">
+              Bookkeeping default for{' '}
+              <span className="font-medium text-gray-800">
+                {mode.entry.category}
+                {mode.entry.subcategory ? ` – ${mode.entry.subcategory}` : ''}
+              </span>
+              . These prefill the Expense form when this item is chosen.
+            </p>
+            <CreatableSelect
+              label="Accounting Classification"
+              value={bk.accountingClassification}
+              options={acOptions}
+              onChange={(v) => setBk((b) => ({ ...b, accountingClassification: v }))}
+              onCreate={(v) => { addAccountingClassification(v); setBk((b) => ({ ...b, accountingClassification: v })); }}
+              placeholder="Optional — e.g. Operating Expense (OpEx)"
+              createLabel="Add new classification…"
+              newFieldLabel="New accounting classification"
+            />
+            <CreatableSelect
+              label="Expense Type"
+              value={bk.expenseType}
+              options={expenseTypeOptions}
+              onChange={(v) => setBk((b) => ({ ...b, expenseType: v }))}
+              onCreate={(v) => { addExpenseType(v); setBk((b) => ({ ...b, expenseType: v })); }}
+              placeholder="Optional — e.g. Fixed"
+              createLabel="Add new expense type…"
+              newFieldLabel="New expense type"
+            />
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" type="button" onClick={closeModal}>Cancel</Button>
+              <Button onClick={handleSave}>Save Changes</Button>
+            </div>
+          </div>
+        ) : (
         <div className="space-y-4">
           {mode.kind === 'addSubcategory' ? (
             <p className="text-xs text-gray-500">
@@ -526,6 +662,7 @@ function CategoryManager() {
             </Button>
           </div>
         </div>
+        )}
       </Modal>
 
       <ConfirmDialog
@@ -558,7 +695,7 @@ type ProductModalMode =
   | { kind: 'renameCategory'; category: string }
   | { kind: 'renameSubcategory'; entry: ProductCategoryEntry };
 
-function ProductCategoryManager() {
+function ProductCategoryManager({ search = '' }: { search?: string }) {
   const { entries, categories, subcategoriesFor, addEntry, updateEntry, renameCategory, deleteEntry } =
     useProductCategoryStore();
   const crud = useListCrud<ProductCategoryEntry>();
@@ -623,15 +760,21 @@ function ProductCategoryManager() {
         : mode.kind === 'renameCategory' ? 'Rename Category'
           : 'Rename Subcategory';
 
-  const grouped = categories().map((category) => ({
-    category,
-    subs: entries.filter((e) => e.category === category && e.subcategory !== ''),
-  }));
+  const q = search.trim().toLowerCase();
+  const grouped = categories()
+    .map((category) => {
+      const allSubs = entries.filter((e) => e.category === category && e.subcategory !== '');
+      if (q === '') return { category, subs: allSubs };
+      const catMatches = category.toLowerCase().includes(q);
+      const subs = catMatches ? allSubs : allSubs.filter((e) => e.subcategory.toLowerCase().includes(q));
+      return { category, subs, _hidden: !catMatches && subs.length === 0 };
+    })
+    .filter((g) => !('_hidden' in g) || !g._hidden);
 
   return (
     <SectionCard
-      title="Categories & Subcategories"
-      subtitle={`${entries.length} entries across ${categories().length} categories · "Cuttings" orders under 25 get the small-order surcharge in Sales`}
+      title="Product & Inventory Categories"
+      subtitle={`${entries.length} entries across ${categories().length} categories · shared by Products and Inventory · "Cuttings" orders under 25 get the small-order surcharge in Sales`}
       actions={<Button size="sm" icon={<Plus className="w-4 h-4" />} onClick={openAddCategory}>Add</Button>}
     >
       {grouped.length === 0 ? (
@@ -759,6 +902,122 @@ function ProductCategoryManager() {
   );
 }
 
+/* ── Lifecycle assumptions (cuttings → fruit growth model) ────────────────────── */
+
+interface AssumptionFieldDef {
+  key: keyof LifecycleAssumptions;
+  label: string;
+  hint: string;
+  step?: string;
+}
+
+/** Whether a field accepts zero as a valid value (most yields/timelines don't). */
+type AssumptionFieldDefExt = AssumptionFieldDef & { allowZero?: boolean };
+
+/** Fruit growth-model inputs — drive the wholesale supply forecast. */
+const FRUIT_ASSUMPTION_FIELDS: AssumptionFieldDefExt[] = [
+  { key: 'yieldFruitsPerMaturePlant', label: 'Fruits / mature plant (per season)', hint: 'Seasonal yield of an established fruiting plant — drives the Farm pool forecast' },
+  { key: 'yieldFruitsGrafted', label: 'First-harvest fruits / grafted cutting', hint: 'Yield of a newly-deployed grafted cutting' },
+  { key: 'yieldFruitsUnrooted', label: 'First-harvest fruits / unrooted cutting', hint: 'Yield of a newly-deployed unrooted cutting' },
+  { key: 'harvestDaysGrafted', label: 'Days to first harvest — grafted', hint: 'Days from planting/delivery to first fruit (grafted)' },
+  { key: 'harvestDaysUnrooted', label: 'Days to first harvest — unrooted', hint: 'Days from planting/delivery to first fruit (unrooted)' },
+  { key: 'fruitWeightKg', label: 'Average fruit weight (kg)', hint: 'Weight of one dragon fruit — converts pieces to kg', step: '0.01' },
+];
+
+/** Cuttings growth-model inputs — drive the estimated ready/plant dates. */
+const CUTTING_ASSUMPTION_FIELDS: AssumptionFieldDefExt[] = [
+  { key: 'callusingDays', label: 'Callusing hold (days)', hint: 'Heal window after harvesting internal cuttings, before the growth countdown starts' },
+  { key: 'cuttingReadyBaseWeeks', label: 'Base grow-out weeks', hint: 'Weeks until a cutting is ready, before the cutting-type modifier' },
+  { key: 'cuttingUnrootedModifierWeeks', label: 'Extra weeks — unrooted', hint: 'Added on top of the base for unrooted cuttings (grafted adds none)', allowZero: true },
+  { key: 'rootWeeksDefault', label: 'Default rooting weeks', hint: 'Weeks a grafted cutting needs to root before it can sell' },
+];
+
+interface AssumptionFieldsEditorProps {
+  fields: AssumptionFieldDefExt[];
+  values: LifecycleAssumptions;
+  setValues: (patch: Partial<LifecycleAssumptions>) => void;
+}
+
+/**
+ * The shared number-grid editor used by both the fruit and cuttings assumption
+ * cards. Local drafts keep a half-typed number from resetting mid-edit; the
+ * value is committed on blur.
+ */
+function AssumptionFieldsEditor({ fields, values, setValues }: AssumptionFieldsEditorProps) {
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+
+  const commit = (field: AssumptionFieldDefExt, raw: string) => {
+    const n = Number(raw);
+    const min = field.allowZero ? 0 : 1e-9;
+    if (Number.isFinite(n) && n >= min) setValues({ [field.key]: n } as Partial<LifecycleAssumptions>);
+    setDrafts((d) => {
+      const next = { ...d };
+      delete next[field.key];
+      return next;
+    });
+  };
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      {fields.map((f) => (
+        <InputField
+          key={f.key}
+          label={f.label}
+          type="number"
+          step={f.step ?? '1'}
+          min={f.allowZero ? 0 : undefined}
+          hint={f.hint}
+          value={drafts[f.key] ?? String(values[f.key])}
+          onChange={(e) => setDrafts((d) => ({ ...d, [f.key]: e.target.value }))}
+          onBlur={(e) => commit(f, e.target.value)}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Editor for the user-manageable lifecycle assumptions, split into two cards:
+ * the fruit growth model (yield/timeline the wholesale forecast reads) and the
+ * cuttings growth model (callusing + grow-out weeks that drive ready dates).
+ * Changing a value re-projects live — no saved records are rewritten.
+ */
+function AssumptionsManager() {
+  const values = useAssumptionsStore((s) => s.values);
+  const setValues = useAssumptionsStore((s) => s.set);
+  const reset = useAssumptionsStore((s) => s.reset);
+
+  return (
+    <>
+      <SectionCard
+        title="Fruit Lifecycle Assumptions"
+        subtitle="Yield & timeline used by the wholesale supply forecast — tune to your orchard"
+        actions={
+          <Button size="sm" variant="outline" onClick={reset}>Reset to defaults</Button>
+        }
+      >
+        <AssumptionFieldsEditor fields={FRUIT_ASSUMPTION_FIELDS} values={values} setValues={setValues} />
+        <p className="mt-3 text-xs text-gray-400">
+          These are projection inputs — changing them re-estimates the forecast but never rewrites saved records.
+        </p>
+      </SectionCard>
+
+      <SectionCard
+        title="Cuttings Lifecycle Assumptions"
+        subtitle="Callusing hold & grow-out timing used to estimate a cutting batch's ready and planting dates"
+        actions={
+          <Button size="sm" variant="outline" onClick={reset}>Reset to defaults</Button>
+        }
+      >
+        <AssumptionFieldsEditor fields={CUTTING_ASSUMPTION_FIELDS} values={values} setValues={setValues} />
+        <p className="mt-3 text-xs text-gray-400">
+          These are projection inputs — changing them re-estimates future ready dates but never rewrites saved batches.
+        </p>
+      </SectionCard>
+    </>
+  );
+}
+
 /* ── Page ─────────────────────────────────────────────────────────────────────── */
 
 export function SettingsPage() {
@@ -770,13 +1029,25 @@ export function SettingsPage() {
   const employees = useEmployeeStore((s) => s.employees);
 
   const countSaleType = (v: string) => sales.filter((s) => s.saleType === v).length;
-  const countInventoryCategory = (v: string) => items.filter((i) => i.category === v).length;
   const countEmployeeType = (v: string) => employees.filter((e) => e.employeeType === v).length;
   const countPosition = (v: string) => employees.filter((e) => e.position === v).length;
+  const countLaborType = (v: string) => employees.filter((e) => e.laborType === v).length;
   const countUnit = (v: string) =>
     products.filter((p) => p.unit === v).length +
     items.filter((i) => i.unit === v).length +
     expenses.filter((e) => e.unit === v).length;
+  // Accounting classification & expense type are shared by expenses AND employees
+  // (labor bookkeeping), so their usage spans both stores. Counting both makes the
+  // "still in use" note before deletion accurate across the whole app.
+  const countAccountingClassification = (v: string) =>
+    expenses.filter((e) => e.accountingClassification === v).length +
+    employees.filter((e) => e.accountingClassification === v).length;
+  const countExpenseType = (v: string) => expenses.filter((e) => e.expenseType === v).length;
+
+  // Global search — filters every manager below (option lists + category
+  // taxonomies) by matching against list titles, values, categories and
+  // subcategories. Empty string shows everything.
+  const [search, setSearch] = useState('');
 
   return (
     <div className="space-y-6">
@@ -786,6 +1057,19 @@ export function SettingsPage() {
       />
 
       <BackupRestore />
+
+      {/* Global search across all option lists & category taxonomies */}
+      <div className="relative max-w-md">
+        <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search categories, subcategories, types, units…"
+          aria-label="Search settings"
+          className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+        />
+      </div>
 
       <div className="flex items-center gap-2 text-gray-500 text-sm">
         <Tag className="w-4 h-4" />
@@ -800,6 +1084,7 @@ export function SettingsPage() {
           addPlaceholder="e.g. Distributor"
           noun="sale type"
           countUsage={countSaleType}
+          search={search}
         />
         <OptionListManager
           title="Employee Types"
@@ -808,6 +1093,7 @@ export function SettingsPage() {
           addPlaceholder="e.g. Intern"
           noun="employee type"
           countUsage={countEmployeeType}
+          search={search}
         />
         <OptionListManager
           title="Positions"
@@ -816,14 +1102,34 @@ export function SettingsPage() {
           addPlaceholder="e.g. Harvester"
           noun="position"
           countUsage={countPosition}
+          search={search}
         />
         <OptionListManager
-          title="Inventory Categories"
-          subtitle="Used when creating or editing inventory items"
-          useStore={useInventoryCategoryStore}
-          addPlaceholder="e.g. Irrigation"
-          noun="inventory category"
-          countUsage={countInventoryCategory}
+          title="Labor Types"
+          subtitle="Direct / Indirect / Selling / Administrative — sets how a role's wage books (COGS vs OpEx)"
+          useStore={useLaborTypeStore}
+          addPlaceholder="e.g. Direct Labor"
+          noun="labor type"
+          countUsage={countLaborType}
+          search={search}
+        />
+        <OptionListManager
+          title="Accounting Classifications"
+          subtitle="CapEx / OpEx / COGS … — shared by the Expense and Employee forms and category bookkeeping"
+          useStore={useAccountingClassificationStore}
+          addPlaceholder="e.g. Operating Expense (OpEx)"
+          noun="accounting classification"
+          countUsage={countAccountingClassification}
+          search={search}
+        />
+        <OptionListManager
+          title="Expense Types"
+          subtitle="Cost behavior (Fixed / Variable / Semi-Variable) — shared by the Expense form and category bookkeeping"
+          useStore={useExpenseTypeStore}
+          addPlaceholder="e.g. Fixed"
+          noun="expense type"
+          countUsage={countExpenseType}
+          search={search}
         />
         <OptionListManager
           title="Units"
@@ -832,12 +1138,15 @@ export function SettingsPage() {
           addPlaceholder="e.g. tray"
           noun="unit"
           countUsage={countUnit}
+          search={search}
         />
       </div>
 
-      <ProductCategoryManager />
+      <ProductCategoryManager search={search} />
 
-      <CategoryManager />
+      <CategoryManager search={search} />
+
+      <AssumptionsManager />
 
       <ProductCatalogManager />
     </div>

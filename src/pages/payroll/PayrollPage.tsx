@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Trash2, Banknote, Filter, CalendarDays, PlayCircle, Check, Undo2, Printer, AlertTriangle, CircleDashed } from 'lucide-react';
+import { Trash2, Banknote, Filter, CalendarDays, PlayCircle, Check, Undo2, Printer, AlertTriangle, CircleDashed, X } from 'lucide-react';
 import { startOfMonth, endOfMonth, format } from 'date-fns';
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -44,7 +44,7 @@ type PayrollView = 'entries' | 'timesheet' | 'run';
 type PaidFilter = 'all' | 'unpaid' | 'paid';
 
 export function PayrollPage() {
-  const { entries, deleteEntry, totalPayroll, totalByEmployee, markPaid, markUnpaid, markManyPaid, updateEntry, unpaidForEmployee } = usePayrollStore();
+  const { entries, deleteEntry, totalPayroll, totalByEmployee, totalByLaborType, markPaid, markUnpaid, markManyPaid, updateEntry, unpaidForEmployee } = usePayrollStore();
   const timesheetDays = useTimesheetStore((s) => s.days);
   const employees = useEmployeeStore((s) => s.employees);
   const sales = useSaleStore((s) => s.sales);
@@ -57,6 +57,10 @@ export function PayrollPage() {
   const [payTarget, setPayTarget] = useState<PayrollEntry | null>(null);
   const [payDate, setPayDate]     = useState('');
 
+  // ── Bulk mark-paid flow: the selected rows + a shared chosen pay date ───────
+  const [bulkPayRows, setBulkPayRows] = useState<PayrollEntry[] | null>(null);
+  const [bulkPayDate, setBulkPayDate] = useState('');
+
   // ── Payslip flow: the employee whose combined payslip we're viewing ─────────
   const [payslipFor, setPayslipFor] = useState<{ id: string; name: string } | null>(null);
 
@@ -64,6 +68,12 @@ export function PayrollPage() {
   const [filterStart, setFilterStart] = useState('');
   const [filterEnd,   setFilterEnd]   = useState('');
   const [paidFilter,  setPaidFilter]  = useState<PaidFilter>('all');
+
+  // ── Outstanding drilldown: clicking the "Outstanding (unpaid)" KPI card
+  //    narrows the table to unpaid entries only. Cleared via the banner's
+  //    "Clear filter". Layers on top of the pay-period filter and leaves the
+  //    KPI cards + charts (all-time) untouched. ─────────────────────────────────
+  const [outstandingOnly, setOutstandingOnly] = useState(false);
 
   // ── Year+Month quick preset ─────────────────────────────────────────────────
   // A shortcut that just drives the existing filterStart/filterEnd date range so
@@ -96,14 +106,26 @@ export function PayrollPage() {
   // while a snapshot exists.
   const [undoSnapshot, setUndoSnapshot] = useState<{ message: string; prev: { id: string; paid: boolean; paidDate?: string }[] } | null>(null);
 
+  // Open the bulk pay-date picker (mirrors the single-select flow — asks for a
+  // payment date rather than silently defaulting each entry to its Saturday).
   const bulkMarkPaid = (rows: PayrollEntry[]) => {
     if (rows.length === 0) return;
+    setBulkPayRows(rows);
+    // Default to the Saturday of the latest selected pay period.
+    const latest = rows.reduce<string>((max, e) => (e.payPeriodStart > max ? e.payPeriodStart : max), '');
+    setBulkPayDate(latest ? payoutDate(latest) : '');
+  };
+
+  const confirmBulkPay = () => {
+    const rows = bulkPayRows;
+    if (!rows || rows.length === 0) { setBulkPayRows(null); return; }
     const prev = rows.map((e) => ({ id: e.id, paid: !!e.paid, paidDate: e.paidDate }));
-    markManyPaid(rows.map((e) => e.id));
+    markManyPaid(rows.map((e) => e.id), bulkPayDate || undefined);
     setUndoSnapshot({
       message: `Marked ${rows.length} entr${rows.length !== 1 ? 'ies' : 'y'} as paid.`,
       prev,
     });
+    setBulkPayRows(null);
   };
 
   const bulkMarkUnpaid = (rows: PayrollEntry[]) => {
@@ -155,11 +177,25 @@ export function PayrollPage() {
   /** Count of meaningful (non-empty) entries — matches what the ledger shows. */
   const meaningfulCount = useMemo(() => entries.filter((e) => !isEmptyPayrollLine(e)).length, [entries]);
 
+  // ── Outstanding drilldown table data ─────────────────────────────────────────
+  // The table shows unpaid rows only while the drilldown is active; it layers on
+  // top of the existing pay-period filter. The banner count reflects what's
+  // currently visible, so marking all visible rows paid self-updates it to 0.
+  const tableData = useMemo(
+    () => (outstandingOnly ? filteredEntries.filter((e) => !e.paid) : filteredEntries),
+    [filteredEntries, outstandingOnly],
+  );
+  const outstandingVisibleCount = useMemo(
+    () => filteredEntries.filter((e) => !e.paid).length,
+    [filteredEntries],
+  );
+
   /** Outstanding (unpaid) net across all entries — the money still owed. */
   const outstanding = useMemo(
     () => entries.filter((e) => !e.paid).reduce((s, e) => s + e.netPay, 0),
     [entries]
   );
+  const hasOutstanding = outstanding > 0;
 
   const filteredTotal        = useMemo(() => filteredEntries.reduce((s, e) => s + e.netPay,   0), [filteredEntries]);
   const filteredGross        = useMemo(() => filteredEntries.reduce((s, e) => s + e.grossPay, 0), [filteredEntries]);
@@ -193,14 +229,14 @@ export function PayrollPage() {
     ].filter((d) => d.value > 0);
   }, [entries]);
 
-  // Per-employee totals for the filtered view
-  const filteredByEmployee = useMemo(() =>
-    filteredEntries.reduce<Record<string, number>>((acc, e) => {
-      acc[e.employeeName] = (acc[e.employeeName] ?? 0) + e.netPay;
-      return acc;
-    }, {}),
-    [filteredEntries]
-  );
+  /** Net pay grouped by labor type (Direct / Indirect / Selling / Admin). */
+  const payrollByLaborType = useMemo(() =>
+    Object.entries(totalByLaborType())
+      .map(([name, value]) => ({ name, value: Number(Number(value).toFixed(2)) }))
+      .filter((d) => d.value > 0)
+      .sort((a, b) => b.value - a.value),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [entries]);
 
   // ── Attendance: total days worked per employee (from the timesheet store) ────
   // Day-map keys are `${weekStart}|${employeeId}`; sum every fraction across all
@@ -282,6 +318,7 @@ export function PayrollPage() {
   const columns: Column<PayrollEntry>[] = [
     { key: 'period',       header: 'Pay Period',   accessor: (e) => `${formatDate(e.payPeriodStart)} – ${formatDate(e.payPeriodEnd)}`, sortValue: (e) => e.payPeriodStart },
     { key: 'employeeName', header: 'Employee',     accessor: (e) => <span className="font-medium">{e.employeeName}</span>,             sortValue: (e) => e.employeeName },
+    { key: 'laborType',    header: 'Labor',        accessor: (e) => e.laborType ? <span className="text-xs font-medium text-primary-700 bg-primary-50 px-2 py-0.5 rounded-full">{e.laborType}</span> : <span className="text-gray-300">—</span>, sortValue: (e) => e.laborType ?? '' },
     {
       key: 'daysWorked',
       header: 'Days',
@@ -373,7 +410,16 @@ export function PayrollPage() {
       {/* Overall KPIs (all time) */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
         <StatCard title="Total Net Payroll"      value={formatPHP(totalPayroll())}  icon={Banknote} iconColor="text-leaf-600" iconBg="bg-leaf-50" />
-        <StatCard title="Outstanding (unpaid)"   value={formatPHP(outstanding)} icon={Banknote} iconColor={outstanding > 0 ? 'text-gold-600' : 'text-gray-400'} iconBg={outstanding > 0 ? 'bg-gold-50' : 'bg-gray-50'} />
+        <StatCard
+          title="Outstanding (unpaid)"
+          value={formatPHP(outstanding)}
+          icon={Banknote}
+          iconColor={hasOutstanding ? 'text-red-500' : 'text-gray-400'}
+          iconBg={hasOutstanding ? 'bg-red-50' : 'bg-gray-50'}
+          valueColor={hasOutstanding ? 'text-red-600' : 'text-gray-900'}
+          subtitle={hasOutstanding ? 'Click to view unpaid payroll' : undefined}
+          onClick={hasOutstanding ? () => setOutstandingOnly(true) : undefined}
+        />
         <StatCard title="Total Commissions Paid" value={formatPHP(entries.reduce((s, e) => s + (e.commissionAmount ?? 0), 0))} icon={Banknote} iconColor="text-primary-600"  iconBg="bg-primary-50" />
         <StatCard title="Total Bonuses Paid"     value={formatPHP(entries.reduce((s, e) => s + (e.bonus ?? 0), 0))} icon={Banknote} iconColor="text-berry-600" iconBg="bg-berry-50" />
       </div>
@@ -440,11 +486,43 @@ export function PayrollPage() {
               <div className="h-48 flex items-center justify-center text-sm text-gray-400">No payroll yet.</div>
             )}
           </SectionCard>
-        </div>
 
-      {/* Attendance + performance charts */}
-      {(hasTimesheetData || hasAttributedSales || hasAttributedHarvest) && (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          {/* Payroll by labor type — Direct/Indirect/Selling/Admin (COGS vs OpEx) */}
+          <SectionCard title="Payroll by Labor Type" subtitle="Direct vs Indirect vs Selling vs Administrative">
+            {payrollByLaborType.length > 0 ? (
+              <ResponsiveContainer width="100%" height={260}>
+                <PieChart>
+                  <Pie
+                    data={payrollByLaborType}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy={PIE_CENTER_Y}
+                    innerRadius={PIE_INNER_RADIUS}
+                    outerRadius={PIE_OUTER_RADIUS}
+                    paddingAngle={1}
+                    label={renderPieValueLabel}
+                    labelLine={false}
+                  >
+                    {payrollByLaborType.map((_, i) => (
+                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(v) => formatPHP(Number(v))}
+                    contentStyle={TOOLTIP_CONTENT_STYLE}
+                    labelStyle={TOOLTIP_LABEL_STYLE}
+                    itemStyle={TOOLTIP_ITEM_STYLE}
+                  />
+                  <Legend iconSize={LEGEND_ICON_SIZE} wrapperStyle={LEGEND_STYLE} />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-48 flex items-center justify-center text-sm text-gray-400">No payroll yet.</div>
+            )}
+          </SectionCard>
+
+          {/* Attendance + performance charts — same grid so every card aligns 2-per-row */}
           {/* Attendance — days worked from the timesheet */}
           {hasTimesheetData && (
             <SectionCard title="Attendance — Days Worked" subtitle="Total days recorded per employee (top 8)">
@@ -528,7 +606,6 @@ export function PayrollPage() {
             </SectionCard>
           )}
         </div>
-      )}
         </div>
         </CollapsibleSection>
       )}
@@ -613,20 +690,6 @@ export function PayrollPage() {
         </div>
       </SectionCard>
 
-      {/* By-employee summary */}
-      {Object.keys(isFiltered ? filteredByEmployee : byEmployee).length > 0 && (
-        <SectionCard title={isFiltered ? 'Net Pay by Employee (filtered)' : 'Net Pay by Employee (all time)'}>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-            {Object.entries(isFiltered ? filteredByEmployee : byEmployee).map(([name, amount]) => (
-              <div key={name} className="bg-gray-50 rounded-lg p-3 border border-gray-100">
-                <p className="text-xs font-medium text-gray-600 truncate">{name}</p>
-                <p className="text-base font-bold text-gray-900 mt-0.5">{formatPHP(amount)}</p>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-      )}
-
       {meaningfulCount === 0 ? (
         <EmptyState
           icon={Banknote}
@@ -636,6 +699,22 @@ export function PayrollPage() {
         />
       ) : (
         <>
+        {/* Active drilldown banner from the "Outstanding (unpaid)" KPI card */}
+        {outstandingOnly && (
+          <div className="mb-4 flex items-center justify-between gap-3 px-4 py-2.5 rounded-lg border border-red-200 bg-red-50 text-sm text-red-700">
+            <span>
+              Showing <span className="font-semibold">{outstandingVisibleCount}</span>{' '}
+              outstanding (unpaid) payroll{outstandingVisibleCount !== 1 ? 's' : ''}.
+            </span>
+            <button
+              type="button"
+              onClick={() => setOutstandingOnly(false)}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md font-medium text-red-700 hover:bg-red-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+            >
+              <X className="w-3.5 h-3.5" /> Clear filter
+            </button>
+          </div>
+        )}
         {undoSnapshot && (
           <div className="mb-4">
             <UndoBar
@@ -646,7 +725,7 @@ export function PayrollPage() {
           </div>
         )}
         <Table
-          data={filteredEntries}
+          data={tableData}
           columns={columns}
           keyExtractor={(e) => e.id}
           searchFilter={(e, q) =>
@@ -689,6 +768,7 @@ export function PayrollPage() {
               </Button>
             </div>
           )}
+          persistKey="payroll"
           defaultSort={{ key: 'period', dir: 'asc' }}
           getRecency={(e) => e.createdAt}
         />
@@ -721,6 +801,27 @@ export function PayrollPage() {
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" type="button" onClick={() => setPayTarget(null)}>Cancel</Button>
             <Button type="button" icon={<Check className="w-4 h-4" />} onClick={confirmPay}>Mark Paid</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Bulk mark-paid — same editable pay date as the single-select flow */}
+      <Modal open={!!bulkPayRows} onClose={() => setBulkPayRows(null)} title="Mark payroll paid" size="sm">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Marking <span className="font-medium text-gray-900">{bulkPayRows?.length ?? 0}</span> entr{(bulkPayRows?.length ?? 0) !== 1 ? 'ies' : 'y'} totaling{' '}
+            <span className="font-semibold text-leaf-700">{formatPHP((bulkPayRows ?? []).reduce((s, e) => s + e.netPay, 0))}</span> as paid.
+          </p>
+          <InputField
+            label="Payment date"
+            type="date"
+            value={bulkPayDate}
+            onChange={(e) => setBulkPayDate(e.target.value)}
+            hint="Applied to all selected entries. Defaults to the latest pay week's Saturday."
+          />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" type="button" onClick={() => setBulkPayRows(null)}>Cancel</Button>
+            <Button type="button" icon={<Check className="w-4 h-4" />} onClick={confirmBulkPay}>Mark Paid</Button>
           </div>
         </div>
       </Modal>

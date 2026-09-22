@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Employee } from '../types';
 import { generateId, now } from '../utils/id';
+import { laborDefaultsForRole } from '../constants';
+import { cascadeEmployeeName } from './entityNameCascade';
 
 /** Auto-calculate weekly and monthly rates from dailyRate */
 function calcRates(dailyRate: number): Pick<Employee, 'weeklyRate' | 'monthlySalary'> {
@@ -30,12 +32,16 @@ interface EmployeeState {
   totalMonthlySalary: () => number;
   /** Count of ACTIVE employees grouped by employee type */
   countByType: () => Record<string, number>;
+  /** Count of ACTIVE employees grouped by labor type (Direct/Indirect/…) */
+  countByLaborType: () => Record<string, number>;
 }
 
 // v3: synced to the bookkeeping sheet — added Kevin (Owner), aligned commissions
-const SEED_VERSION = 3;
+// v4: seeded labor bookkeeping (laborType + accountingClassification) per role
+//     from the "Labor" tab.
+const SEED_VERSION = 4;
 
-/** Build an employee row cleanly */
+/** Build an employee row cleanly. Labor bookkeeping defaults from the role. */
 function e(
   name: string,
   position: string,
@@ -44,11 +50,14 @@ function e(
   commission: number,
   notes = ''
 ): Employee {
+  const labor = laborDefaultsForRole(position);
   return {
     id: generateId(),
     name,
     position,
     employeeType,
+    laborType: labor.laborType,
+    accountingClassification: labor.accountingClassification,
     dailyRate,
     ...calcRates(dailyRate),
     commission,
@@ -80,9 +89,14 @@ export const useEmployeeStore = create<EmployeeState>()(
       _seeded: SEED_VERSION,
 
       addEmployee: (data) => {
+        // Default the labor bookkeeping from the role when the caller didn't set
+        // it, so every employee carries a classification even on a quick add.
+        const labor = laborDefaultsForRole(data.position);
         const employee: Employee = {
           ...data,
           active: data.active ?? true,
+          laborType: data.laborType?.trim() || labor.laborType,
+          accountingClassification: data.accountingClassification?.trim() || labor.accountingClassification,
           ...calcRates(data.dailyRate),
           id: generateId(),
           createdAt: now(),
@@ -92,7 +106,7 @@ export const useEmployeeStore = create<EmployeeState>()(
         return employee;
       },
 
-      updateEmployee: (id, data) =>
+      updateEmployee: (id, data) => {
         set((state) => ({
           employees: state.employees.map((emp) => {
             if (emp.id !== id) return emp;
@@ -102,7 +116,15 @@ export const useEmployeeStore = create<EmployeeState>()(
             }
             return updated;
           }),
-        })),
+        }));
+        // Propagate a renamed employee to payroll, commission, sales
+        // (salesperson) and production (harvester) records that snapshot the
+        // employee name (all matched by employeeId).
+        if (data.name !== undefined) {
+          const updated = get().employees.find((emp) => emp.id === id);
+          if (updated) cascadeEmployeeName(id, updated.name);
+        }
+      },
 
       deleteEmployee: (id) =>
         set((state) => ({
@@ -126,6 +148,13 @@ export const useEmployeeStore = create<EmployeeState>()(
       countByType: () =>
         get().employees.filter(isEmployeeActive).reduce<Record<string, number>>((acc, emp) => {
           acc[emp.employeeType] = (acc[emp.employeeType] ?? 0) + 1;
+          return acc;
+        }, {}),
+
+      countByLaborType: () =>
+        get().employees.filter(isEmployeeActive).reduce<Record<string, number>>((acc, emp) => {
+          const label = (emp.laborType ?? '').trim() || 'Unclassified';
+          acc[label] = (acc[label] ?? 0) + 1;
           return acc;
         }, {}),
     }),

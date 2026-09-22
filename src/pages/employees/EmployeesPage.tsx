@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import { Plus, UserCheck, Banknote, Users } from 'lucide-react';
 import { useEmployeeStore, isEmployeeActive } from '../../store/employeeStore';
 import type { Employee } from '../../types';
@@ -12,9 +13,15 @@ import { EmptyState } from '../../components/ui/EmptyState';
 import { Badge } from '../../components/ui/Badge';
 import { StatCard } from '../../components/ui/StatCard';
 import { RowActions } from '../../components/ui/RowActions';
+import { UndoBar } from '../../components/ui/UndoBar';
+import { BulkFieldEdit, type BulkFieldConfig } from '../../components/ui/BulkFieldEdit';
 import { formatPHP } from '../../utils/format';
 import { useListCrud } from '../../hooks/useListCrud';
+import { useEmployeePositionStore, useEmployeeTypeStore } from '../../store/optionStores';
 import { EmployeeForm } from './EmployeeForm';
+
+/** The employee fields we support bulk-editing (drives the field descriptors). */
+type BulkKey = 'position' | 'employeeType' | 'active' | 'dailyRate';
 
 type BadgeVariant = 'green' | 'blue' | 'yellow' | 'gray';
 
@@ -59,10 +66,72 @@ export function EmployeesPage() {
   const byType = useMemo(() => countByType(), [employees]);
   const commissionedCount = useMemo(() => employees.filter((e) => isEmployeeActive(e) && e.commission > 0).length, [employees]);
 
+  // ── Bulk field edit (+ undo) ────────────────────────────────────────────────
+  const positionOptions = useEmployeePositionStore((s) => s.values).map((v) => ({ value: v, label: v }));
+  const addPosition = useEmployeePositionStore((s) => s.add);
+  const typeOptions = useEmployeeTypeStore((s) => s.values).map((v) => ({ value: v, label: v }));
+  const addType = useEmployeeTypeStore((s) => s.add);
+
+  const [bulkField, setBulkField] = useState<{ key: BulkKey; config: BulkFieldConfig } | null>(null);
+  const [bulkRows, setBulkRows] = useState<Employee[]>([]);
+  // Shared undo: previous per-row patches (dailyRate undo also restores derived
+  // weekly/monthly since updateEmployee recomputes them from dailyRate).
+  const [undoSnapshot, setUndoSnapshot] = useState<{ message: string; prev: { id: string; patch: Partial<Employee> }[] } | null>(null);
+
+  const bulkFields: { key: BulkKey; config: BulkFieldConfig }[] = [
+    { key: 'position', config: { label: 'Position', type: 'creatable', options: positionOptions, onCreate: addPosition } },
+    { key: 'employeeType', config: { label: 'Type', type: 'creatable', options: typeOptions, onCreate: addType } },
+    { key: 'active', config: { label: 'Status', type: 'select', options: [{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }], hint: 'Inactive employees are hidden from the timesheet & payroll run.' } },
+    { key: 'dailyRate', config: { label: 'Daily Rate (₱)', type: 'number', min: 0, step: '0.01', hint: 'Weekly (×5) and monthly (×20) salaries recalculate automatically.' } },
+  ];
+
+  const openBulk = (key: BulkKey, config: BulkFieldConfig, rows: Employee[]) => {
+    if (rows.length === 0) return;
+    setBulkField({ key, config });
+    setBulkRows(rows);
+  };
+  const closeBulk = () => { setBulkField(null); setBulkRows([]); };
+
+  const applyBulk = (value: string | number) => {
+    if (!bulkField) return;
+    const { key, config } = bulkField;
+    const count = bulkRows.length;
+
+    if (key === 'active') {
+      const makeActive = value === 'active';
+      const prev = bulkRows.map((e) => ({ id: e.id, patch: { active: isEmployeeActive(e) } as Partial<Employee> }));
+      bulkRows.forEach((e) => setActive(e.id, makeActive));
+      setUndoSnapshot({ message: `Set status to ${makeActive ? 'Active' : 'Inactive'} for ${count} employee${count !== 1 ? 's' : ''}.`, prev });
+    } else if (key === 'dailyRate') {
+      // Snapshot the fields updateEmployee recomputes, so undo fully restores them.
+      const prev = bulkRows.map((e) => ({ id: e.id, patch: { dailyRate: e.dailyRate } as Partial<Employee> }));
+      bulkRows.forEach((e) => updateEmployee(e.id, { dailyRate: Number(value) }));
+      setUndoSnapshot({ message: `Set daily rate to ${formatPHP(Number(value))} for ${count} employee${count !== 1 ? 's' : ''}.`, prev });
+    } else {
+      const prev = bulkRows.map((e) => ({ id: e.id, patch: { [key]: e[key] } as Partial<Employee> }));
+      bulkRows.forEach((e) => updateEmployee(e.id, { [key]: value } as Partial<Employee>));
+      setUndoSnapshot({ message: `Set ${config.label.toLowerCase()} to "${value}" for ${count} employee${count !== 1 ? 's' : ''}.`, prev });
+    }
+
+    toast.success(`Updated ${config.label.toLowerCase()} for ${count} employee${count !== 1 ? 's' : ''}`);
+    closeBulk();
+  };
+
+  const undoBulk = () => {
+    if (!undoSnapshot) return;
+    undoSnapshot.prev.forEach(({ id, patch }) => {
+      if ('active' in patch) setActive(id, patch.active !== false);
+      else updateEmployee(id, patch);
+    });
+    setUndoSnapshot(null);
+  };
+
   const columns: Column<Employee>[] = [
     { key: 'name', header: 'Name', accessor: (e) => <span className="font-medium text-gray-900">{e.name}</span>, sortValue: (e) => e.name },
     { key: 'position', header: 'Position', accessor: (e) => e.position, sortValue: (e) => e.position },
     { key: 'employeeType', header: 'Type', accessor: (e) => <Badge label={e.employeeType} variant={typeVariant(e.employeeType)} />, sortValue: (e) => e.employeeType },
+    { key: 'laborType', header: 'Labor', accessor: (e) => e.laborType ? <span className="text-xs font-medium text-primary-700 bg-primary-50 px-2 py-0.5 rounded-full">{e.laborType}</span> : <span className="text-gray-300">—</span>, sortValue: (e) => e.laborType ?? '' },
+    { key: 'accountingClassification', header: 'Accounting', accessor: (e) => e.accountingClassification ? <span className="text-xs font-medium text-berry-700 bg-berry-50 px-2 py-0.5 rounded-full">{e.accountingClassification}</span> : <span className="text-gray-300">—</span>, sortValue: (e) => e.accountingClassification ?? '' },
     {
       key: 'status',
       header: 'Status',
@@ -113,7 +182,7 @@ export function EmployeesPage() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        <StatCard title="Total Employees" value={employees.length} icon={UserCheck} iconColor="text-berry-600" iconBg="bg-berry-50" />
+        <StatCard title="Total Employees" value={employees.length} subtitle={`${activeCount} active · ${inactiveCount} inactive`} icon={UserCheck} iconColor="text-berry-600" iconBg="bg-berry-50" />
         <StatCard title="Monthly Salary Commitment" value={formatPHP(monthlyCommitment)} subtitle="Sum of all monthly salaries" icon={Banknote} iconColor="text-primary-600" iconBg="bg-primary-50" />
         <StatCard title="On Commission" value={commissionedCount} subtitle="Employees with a commission %" icon={Users} iconColor="text-gold-600" iconBg="bg-gold-50" />
       </div>
@@ -142,6 +211,14 @@ export function EmployeesPage() {
         </label>
       )}
 
+      {undoSnapshot && (
+        <UndoBar
+          message={undoSnapshot.message}
+          onUndo={undoBulk}
+          onDismiss={() => setUndoSnapshot(null)}
+        />
+      )}
+
       {employees.length === 0 ? (
         <EmptyState icon={UserCheck} title="No employees yet" description="Add your first employee to get started." action={<Button onClick={crud.openAdd} icon={<Plus className="w-4 h-4" />}>Add Employee</Button>} />
       ) : (
@@ -153,11 +230,22 @@ export function EmployeesPage() {
             e.name.toLowerCase().includes(q) ||
             e.position.toLowerCase().includes(q) ||
             e.employeeType.toLowerCase().includes(q) ||
+            (e.laborType ?? '').toLowerCase().includes(q) ||
+            (e.accountingClassification ?? '').toLowerCase().includes(q) ||
             e.notes.toLowerCase().includes(q)
           }
           searchPlaceholder="Search employees…"
+          bulkActions={{
+            noun: 'employee',
+            actions: bulkFields.map(({ key, config }) => ({
+              label: `Set ${config.label}`,
+              onClick: (rows: Employee[]) => openBulk(key, config, rows),
+            })),
+            onDelete: (rows) => rows.forEach((e) => deleteEmployee(e.id)),
+          }}
           actions={(e) => <RowActions onEdit={() => crud.openEdit(e)} onDelete={() => crud.requestDelete(e)} />}
           onCellEdit={(e, key, value) => updateEmployee(e.id, { [key]: value })}
+          persistKey="employees"
           defaultSort={{ key: 'name', dir: 'asc' }}
           getRecency={(e) => e.createdAt}
           focusId={focusId}
@@ -173,6 +261,15 @@ export function EmployeesPage() {
         onClose={crud.cancelDelete}
         onConfirm={() => crud.confirmDelete((e) => deleteEmployee(e.id))}
         message={`Delete employee "${crud.deleteTarget?.name}"? This cannot be undone.`}
+      />
+
+      {/* Bulk-edit one field across the selected employees (undoable) */}
+      <BulkFieldEdit
+        open={!!bulkField}
+        onClose={closeBulk}
+        field={bulkField?.config ?? null}
+        count={bulkRows.length}
+        onApply={applyBulk}
       />
     </div>
   );

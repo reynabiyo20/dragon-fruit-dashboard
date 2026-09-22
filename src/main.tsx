@@ -3,6 +3,11 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { SEED_SNAPSHOT } from './store/seedSnapshot'
+// Eagerly load the custom service-category store so its persisted names populate
+// the isServiceCategory registry at startup — this makes an edited expense in a
+// user-added service category route to the Service form even before that form
+// (or any other store) is lazily imported.
+import './store/serviceCategoryStore'
 
 /**
  * One-time storage reset + baseline seed when the persisted data schema changes.
